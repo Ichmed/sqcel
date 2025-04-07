@@ -1,0 +1,9 @@
+[package]
+name = "sqcel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cel-parser = "0.8.0"
+sea-query = { version = "0.32.3", features = ["postgres-types"] }
+thiserror = "2.0.12"

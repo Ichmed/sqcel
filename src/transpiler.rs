@@ -1,22 +1,76 @@
 use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, UnaryOp};
-use sea_query::{Alias, BinOper, CaseStatement, Func, SimpleExpr as SqlExpr, Value};
-use std::sync::Arc;
+use sea_query::{
+    Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, SeaRc, SimpleExpr as SqlExpr, Value,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use thiserror::Error;
 
-pub struct Transpiler;
+#[derive(Debug, Default)]
+pub struct Transpiler {
+    /// Identifiers included in vars will become
+    /// constants during conversion (instead of bind params)
+    pub(crate) variables: HashMap<String, Value>,
+    /// These identifiers are treated as column names
+    pub(crate) columns: HashSet<String>,
+    /// These identifiers are treated as table names
+    ///
+    /// Members of theses identifiers will be interpreted as column names
+    pub(crate) tables: HashSet<String>,
+    /// These identifiers are treated as schema names
+    ///
+    /// Members of theses identifiers will be interpreted as table names
+    ///
+    /// Members of those identifiers will be interpreted as column names
+    pub(crate) schemas: HashSet<String>,
+}
 
 impl Transpiler {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    pub fn transpile<T>(&self, src: &str) -> Result<SqlExpr> {
-        Ok(cel_parser::parse(src)?.to_sql(self)?)
+    pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
+        cel_parser::parse(src)?.into_sql(self)
     }
+
+    pub fn var(mut self, key: impl ToString, val: impl Into<Value>) -> Self {
+        self.variables.insert(key.to_string(), val.into());
+        self
+    }
+
+    pub fn column(mut self, column: impl ToString) -> Self {
+        self.columns.insert(column.to_string());
+        self
+    }
+
+    fn resolve_ident(&self, iden: &str) -> Result<SqlExpr> {
+        Ok(match iden {
+            "_" => SqlExpr::Column(ColumnRef::Column(SeaRc::new(Alias::new("NEW")))),
+            iden if self.columns.contains(iden) => {
+                SqlExpr::Column(ColumnRef::Column(SeaRc::new(Alias::new(iden))))
+            }
+            iden => self
+                .variables
+                .get(iden)
+                .map(|v| SqlExpr::Constant(v.clone()))
+                .unwrap_or_else(|| {
+                    SqlExpr::Value(sea_query::Value::String(Some(Box::new(iden.to_owned()))))
+                }),
+        })
+    }
+}
+
+fn alias(s: impl ToString) -> DynIden {
+    SeaRc::new(Alias::new(s.to_string()))
 }
 
 #[derive(Debug, Error)]
 pub enum ParseError {
+    #[error("A non ident column, field or schema name was supplied")]
+    NonIdentColumnFieldSchema,
     #[error(transparent)]
     CelError(#[from] cel_parser::error::ParseError),
     #[error("A non ident function name was supplied")]
@@ -26,36 +80,34 @@ pub enum ParseError {
 pub type Result<T> = std::result::Result<T, ParseError>;
 
 trait ToSql<E> {
-    fn to_sql(self, tp: &Transpiler) -> Result<E>;
+    fn into_sql(self, tp: &Transpiler) -> Result<E>;
 }
 
 impl ToSql<SqlExpr> for CelExpr {
-    fn to_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+    fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
         Ok(match self {
-            CelExpr::Arithmetic(lhs, op, rhs) => {
-                lhs.to_sql(tp)?.binary(op.to_sql(tp)?, rhs.to_sql(tp)?)
-            }
-            CelExpr::Relation(lhs, op, rhs) => {
-                lhs.to_sql(tp)?.binary(op.to_sql(tp)?, rhs.to_sql(tp)?)
-            }
+            CelExpr::Arithmetic(lhs, op, rhs) => lhs
+                .into_sql(tp)?
+                .binary(op.into_sql(tp)?, rhs.into_sql(tp)?),
+            CelExpr::Relation(lhs, op, rhs) => lhs
+                .into_sql(tp)?
+                .binary(op.into_sql(tp)?, rhs.into_sql(tp)?),
             CelExpr::Ternary(r#if, then, r#else) => SqlExpr::Case(Box::new(
                 CaseStatement::new()
-                    .case(r#if.to_sql(tp)?, then.to_sql(tp)?)
-                    .finally(r#else.to_sql(tp)?),
+                    .case(r#if.into_sql(tp)?, then.into_sql(tp)?)
+                    .finally(r#else.into_sql(tp)?),
             )),
-            CelExpr::Or(a, b) => a.to_sql(tp)?.or(b.to_sql(tp)?),
-            CelExpr::And(a, b) => a.to_sql(tp)?.add(b.to_sql(tp)?),
-            CelExpr::Unary(unary_op, expression) => (unary_op, *expression).to_sql(tp)?,
-            CelExpr::Member(expression, member) => (*expression, *member).to_sql(tp)?,
+            CelExpr::Or(a, b) => a.into_sql(tp)?.or(b.into_sql(tp)?),
+            CelExpr::And(a, b) => a.into_sql(tp)?.add(b.into_sql(tp)?),
+            CelExpr::Unary(unary_op, expression) => (unary_op, *expression).into_sql(tp)?,
+            CelExpr::Member(expression, member) => (*expression, *member).into_sql(tp)?,
             CelExpr::FunctionCall(ident, receiver, args) => {
-                function_call(ident, receiver, args, tp)?
+                function_call(*ident, receiver, args, tp)?
             }
             CelExpr::List(items) => list(items, tp)?,
             CelExpr::Map(items) => map(items, tp)?,
-            CelExpr::Atom(atom) => atom.to_sql(tp)?,
-            CelExpr::Ident(s) => {
-                SqlExpr::Value(sea_query::Value::String(Some(Box::new((*s).clone()))))
-            }
+            CelExpr::Atom(atom) => atom.into_sql(tp)?,
+            CelExpr::Ident(iden) => tp.resolve_ident(&iden)?,
         })
     }
 }
@@ -65,7 +117,7 @@ fn list(items: Vec<CelExpr>, tp: &Transpiler) -> Result<SqlExpr> {
         Func::cust(Alias::new("jsonb_build_list")).args(
             items
                 .into_iter()
-                .map(|x| x.to_sql(tp))
+                .map(|x| x.into_sql(tp))
                 .collect::<Result<Vec<_>>>()?,
         ),
     ))
@@ -76,7 +128,7 @@ fn map(items: Vec<(CelExpr, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
         Func::cust(Alias::new("jsonb_build_object")).args(
             items
                 .into_iter()
-                .flat_map(|(a, b)| [a.to_sql(tp), b.to_sql(tp)])
+                .flat_map(|(a, b)| [a.into_sql(tp), b.into_sql(tp)])
                 .collect::<Result<Vec<_>>>()?,
         ),
     ))
@@ -92,7 +144,7 @@ fn obj(items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
                         Ok(SqlExpr::Constant(Value::String(Some(Box::new(
                             (*a).clone(),
                         ))))),
-                        b.to_sql(tp),
+                        b.into_sql(tp),
                     ]
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -101,12 +153,12 @@ fn obj(items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
 }
 
 fn function_call(
-    ident: Box<CelExpr>,
+    ident: CelExpr,
     receiver: Option<Box<CelExpr>>,
     args: Vec<CelExpr>,
     tp: &Transpiler,
 ) -> Result<SqlExpr> {
-    match *ident {
+    match ident {
         // Clone makes me sad ;(
         CelExpr::Ident(i) => match (i.as_str(), receiver, args.as_slice()) {
             ("int", _, [exp, ..]) => json_cast("integer", exp.clone(), tp),
@@ -119,7 +171,7 @@ fn function_call(
                         .map(|x| *x)
                         .into_iter()
                         .chain(args)
-                        .map(|x| x.to_sql(tp))
+                        .map(|x| x.into_sql(tp))
                         .collect::<Result<Vec<_>>>()?,
                 ),
             )),
@@ -130,7 +182,7 @@ fn function_call(
 
 fn json_cast(ty: &str, exp: CelExpr, tp: &Transpiler) -> Result<SqlExpr> {
     Ok(
-        SqlExpr::FunctionCall(Func::cust(Alias::new("nullif")).arg(exp.to_sql(tp)?).arg(
+        SqlExpr::FunctionCall(Func::cust(Alias::new("nullif")).arg(exp.into_sql(tp)?).arg(
             SqlExpr::Constant(Value::String(Some(Box::new("null".to_owned())))),
         ))
         .cast_as(Alias::new(ty)),
@@ -138,7 +190,7 @@ fn json_cast(ty: &str, exp: CelExpr, tp: &Transpiler) -> Result<SqlExpr> {
 }
 
 impl ToSql<BinOper> for ArithmeticOp {
-    fn to_sql(self, tp: &Transpiler) -> Result<BinOper> {
+    fn into_sql(self, _tp: &Transpiler) -> Result<BinOper> {
         Ok(match self {
             ArithmeticOp::Add => BinOper::Add,
             ArithmeticOp::Subtract => BinOper::Sub,
@@ -150,7 +202,7 @@ impl ToSql<BinOper> for ArithmeticOp {
 }
 
 impl ToSql<BinOper> for RelationOp {
-    fn to_sql(self, tp: &Transpiler) -> Result<BinOper> {
+    fn into_sql(self, _tp: &Transpiler) -> Result<BinOper> {
         Ok(match self {
             RelationOp::LessThan => BinOper::SmallerThan,
             RelationOp::LessThanEq => BinOper::SmallerThanOrEqual,
@@ -164,7 +216,7 @@ impl ToSql<BinOper> for RelationOp {
 }
 
 impl ToSql<SqlExpr> for Atom {
-    fn to_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+    fn into_sql(self, _tp: &Transpiler) -> Result<SqlExpr> {
         Ok(SqlExpr::Constant(match self {
             Atom::Int(num) => Value::BigInt(Some(num)),
             Atom::UInt(num) => Value::BigUnsigned(Some(num)),
@@ -178,35 +230,53 @@ impl ToSql<SqlExpr> for Atom {
 }
 
 impl ToSql<SqlExpr> for (UnaryOp, CelExpr) {
-    fn to_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+    fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
         Ok(match self {
-            (UnaryOp::DoubleMinus | UnaryOp::DoubleNot, x) => x.to_sql(tp)?,
-            (UnaryOp::Not, x) => x.to_sql(tp)?.not(),
-            (UnaryOp::Minus, x) => SqlExpr::Constant(Value::BigInt(Some(0))).sub(x.to_sql(tp)?),
+            (UnaryOp::DoubleMinus | UnaryOp::DoubleNot, x) => x.into_sql(tp)?,
+            (UnaryOp::Not, x) => x.into_sql(tp)?.not(),
+            (UnaryOp::Minus, x) => SqlExpr::Constant(Value::BigInt(Some(0))).sub(x.into_sql(tp)?),
         })
     }
 }
 
+// Variable Access
 impl ToSql<SqlExpr> for (CelExpr, Member) {
-    fn to_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+    fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
         Ok(match self {
+            // Turn a protobuf message into a dict
+            // TODO: validate the structure first
             (CelExpr::Ident(_), Member::Fields(items)) => obj(items, tp)?,
+            // Resolve table.column access
+            (CelExpr::Ident(t), Member::Attribute(c)) if tp.tables.contains(&*t) => {
+                SqlExpr::Column(ColumnRef::TableColumn(alias(t), alias(c)))
+            }
+            // Resolve schema.table.column
+            (CelExpr::Member(s, t), Member::Attribute(c)) => match (*s, *t) {
+                (CelExpr::Ident(s), Member::Attribute(t)) if tp.schemas.contains(&*s) => {
+                    SqlExpr::Column(ColumnRef::SchemaTableColumn(alias(s), alias(t), alias(c)))
+                }
+                (s, t) => SqlExpr::Binary(
+                    Box::new(CelExpr::Member(Box::new(s), Box::new(t)).into_sql(tp)?),
+                    BinOper::Custom("->"),
+                    Box::new(Member::Attribute(c).into_sql(tp)?),
+                ),
+            },
             (receiver, field) => SqlExpr::Binary(
-                Box::new(receiver.to_sql(tp)?),
+                Box::new(receiver.into_sql(tp)?),
                 BinOper::Custom("->"),
-                Box::new(field.to_sql(tp)?),
+                Box::new(field.into_sql(tp)?),
             ),
         })
     }
 }
 
 impl ToSql<SqlExpr> for Member {
-    fn to_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+    fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
         Ok(match self {
             Member::Attribute(iden) => {
                 SqlExpr::Constant(Value::String(Some(Box::new((*iden).to_owned()))))
             }
-            Member::Index(expression) => expression.to_sql(tp)?,
+            Member::Index(expression) => expression.into_sql(tp)?,
             Member::Fields(items) => obj(items, tp)?,
         })
     }
@@ -223,7 +293,10 @@ mod test {
     fn test() {
         let x = "int({bar: 5}.bar) + 1 == -3 ? 10 : 5";
         println!("{x}");
-        let x = cel_parser::parse(x).unwrap().to_sql(&Transpiler).unwrap();
+        let x = cel_parser::parse(x)
+            .unwrap()
+            .into_sql(&Transpiler::new())
+            .unwrap();
         let x = Query::select().expr(x).build(PostgresQueryBuilder);
         println!("{}", x.0);
     }
@@ -231,5 +304,66 @@ mod test {
     #[test]
     fn funtest() {
         dbg!(cel_parser::parse(r#"M{}.value"#).unwrap());
+    }
+
+    #[test]
+    fn trigger() {
+        let q = Query::select()
+            .expr(
+                Transpiler::new()
+                    .var("input_a", "foo")
+                    .column("condition")
+                    .transpile(r#"{"test": condition ? input_a : 5, "data": data}"#)
+                    .unwrap(),
+            )
+            .build(PostgresQueryBuilder);
+        println!("{}", q.0);
+        dbg!(q.1);
+    }
+
+    #[test]
+    fn bike() {
+        let tp = Transpiler {
+            variables: Default::default(),
+            columns: ["my_col".into()].into(),
+            tables: ["my_tab".into()].into(),
+            schemas: ["my_sch".into()].into(),
+        };
+
+        fn helper(code: &str, tp: &Transpiler) -> String {
+            let q = Query::select()
+                .expr(tp.transpile(code).unwrap())
+                .build(PostgresQueryBuilder)
+                .0;
+            q
+        }
+
+        assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
+        assert_eq!(helper("my_tab", &tp), r#"SELECT $1"#);
+        assert_eq!(helper("other", &tp), r#"SELECT $1"#);
+        assert_eq!(helper("my_tab.my_col", &tp), r#"SELECT "my_tab"."my_col""#);
+        assert_eq!(helper("other.thing", &tp), r#"SELECT $1 -> 'thing'"#);
+        assert_eq!(helper("other.my_col", &tp), r#"SELECT $1 -> 'my_col'"#);
+        assert_eq!(
+            helper("my_sch.my_tab.my_col", &tp),
+            r#"SELECT "my_sch"."my_tab"."my_col""#
+        );
+        assert_eq!(
+            helper("some.thing.else", &tp),
+            r#"SELECT ($1 -> 'thing') -> 'else'"#
+        );
+        assert_eq!(
+            helper("some.my_tab.else", &tp),
+            r#"SELECT ($1 -> 'my_tab') -> 'else'"#
+        );
+
+        assert_eq!(
+            helper("four.things.are.nice", &tp),
+            r#"SELECT (($1 -> 'things') -> 'are') -> 'nice'"#
+        );
+        assert_eq!(
+            helper("my_sch.things.are.nice", &tp),
+            r#"SELECT "my_sch"."things"."are" -> 'nice'"#
+        );
     }
 }

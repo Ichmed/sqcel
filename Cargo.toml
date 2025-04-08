@@ -5,5 +5,13 @@ edition = "2024"
 
 [dependencies]
 cel-parser = "0.8.0"
-sea-query = { version = "0.32.3", features = ["postgres-types"] }
+clap = { version = "4.5.35", optional = true, features = ["derive"] }
+sea-query = { version = "0.32.3", features = ["postgres-types", "with-json"] }
+serde = { version = "1.0.219", optional = true }
+serde_json = { version = "1.0.140", optional = true }
 thiserror = "2.0.12"
+
+[features]
+default = ["serde_json", "cli"]
+serde_json = ["dep:serde_json", "dep:serde"]
+cli = ["dep:clap"]

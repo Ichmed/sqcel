@@ -1,7 +1,8 @@
 use crate::transpiler::Transpiler;
 use clap::Parser;
+use serde_json::Value;
 use sqcel::{PostgresQueryBuilder, Query};
-use std::{collections::HashMap, io::BufRead};
+use std::io::BufRead;
 
 pub mod transpiler;
 
@@ -37,29 +38,48 @@ impl Cli {
             schemas,
         } = self;
 
-        let mut variables = variables.into_iter();
-        let mut variables_map: HashMap<String, sea_query::Value> = Default::default();
+        let variables = variables
+            .into_iter()
+            .map(|v| {
+                v.split_once(":")
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .expect("key:value pairs must contain a colon")
+            })
+            .map(|(k, v)| (k, serde_json::from_str::<Value>(&v).unwrap().into()))
+            .collect();
 
-        while let Some(entry) = variables.next() {
-            if let Some((key, value)) = entry
-                .split_once(':')
-                .map(|(a, b)| (a.to_owned(), b.to_owned()))
-                .or_else(|| variables.next().map(|val| (entry, val)))
-            {
-                variables_map.insert(
-                    key,
-                    dbg!(serde_json::from_str::<serde_json::Value>(dbg!(&value)))
-                        .unwrap()
-                        .into(),
-                );
-            }
-        }
+        let columns = columns
+            .into_iter()
+            .map(|v| {
+                v.split_once(":")
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .unwrap_or((v.clone(), v))
+            })
+            .collect();
+
+        let tables = tables
+            .into_iter()
+            .map(|v| {
+                v.split_once(":")
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .unwrap_or((v.clone(), v))
+            })
+            .collect();
+
+        let schemas = schemas
+            .into_iter()
+            .map(|v| {
+                v.split_once(":")
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .unwrap_or((v.clone(), v))
+            })
+            .collect();
 
         Transpiler {
-            variables: variables_map,
-            columns: columns.into_iter().collect(),
-            tables: tables.into_iter().collect(),
-            schemas: schemas.into_iter().collect(),
+            variables,
+            columns,
+            tables,
+            schemas,
         }
     }
 }

@@ -2,10 +2,7 @@ use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, 
 use sea_query::{
     Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, SeaRc, SimpleExpr as SqlExpr, Value,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
 #[derive(Debug, Default)]
@@ -14,19 +11,18 @@ pub struct Transpiler {
     /// constants during conversion (instead of bind params)
     pub(crate) variables: HashMap<String, Value>,
     /// These identifiers are treated as column names
-    pub(crate) columns: HashSet<String>,
+    pub(crate) columns: HashMap<String, String>,
     /// These identifiers are treated as table names
     ///
     /// Members of theses identifiers will be interpreted as column names
-    pub(crate) tables: HashSet<String>,
+    pub(crate) tables: HashMap<String, String>,
     /// These identifiers are treated as schema names
     ///
     /// Members of theses identifiers will be interpreted as table names
     ///
     /// Members of those identifiers will be interpreted as column names
-    pub(crate) schemas: HashSet<String>,
+    pub(crate) schemas: HashMap<String, String>,
 }
-
 impl Transpiler {
     pub fn new() -> Self {
         Self::default()
@@ -42,15 +38,39 @@ impl Transpiler {
     }
 
     pub fn column(mut self, column: impl ToString) -> Self {
-        self.columns.insert(column.to_string());
+        self.columns.insert(column.to_string(), column.to_string());
+        self
+    }
+
+    pub fn column_alias(mut self, alias: impl ToString, column: impl ToString) -> Self {
+        self.columns.insert(alias.to_string(), column.to_string());
+        self
+    }
+
+    pub fn table(mut self, table: impl ToString) -> Self {
+        self.tables.insert(table.to_string(), table.to_string());
+        self
+    }
+
+    pub fn table_alias(mut self, alias: impl ToString, table: impl ToString) -> Self {
+        self.tables.insert(alias.to_string(), table.to_string());
+        self
+    }
+
+    pub fn schema(mut self, schema: impl ToString) -> Self {
+        self.schemas.insert(schema.to_string(), schema.to_string());
+        self
+    }
+
+    pub fn schema_alias(mut self, alias: impl ToString, schema: impl ToString) -> Self {
+        self.schemas.insert(alias.to_string(), schema.to_string());
         self
     }
 
     fn resolve_ident(&self, iden: &str) -> Result<SqlExpr> {
         Ok(match iden {
-            "_" => SqlExpr::Column(ColumnRef::Column(SeaRc::new(Alias::new("NEW")))),
-            iden if self.columns.contains(iden) => {
-                SqlExpr::Column(ColumnRef::Column(SeaRc::new(Alias::new(iden))))
+            iden if self.columns.contains_key(iden) => {
+                SqlExpr::Column(ColumnRef::Column(alias(self.columns.get(iden).unwrap())))
             }
             iden => self
                 .variables
@@ -247,13 +267,20 @@ impl ToSql<SqlExpr> for (CelExpr, Member) {
             // TODO: validate the structure first
             (CelExpr::Ident(_), Member::Fields(items)) => obj(items, tp)?,
             // Resolve table.column access
-            (CelExpr::Ident(t), Member::Attribute(c)) if tp.tables.contains(&*t) => {
-                SqlExpr::Column(ColumnRef::TableColumn(alias(t), alias(c)))
+            (CelExpr::Ident(t), Member::Attribute(c)) if tp.tables.contains_key(&*t) => {
+                SqlExpr::Column(ColumnRef::TableColumn(
+                    alias(tp.tables.get(&*t).unwrap()),
+                    alias(c),
+                ))
             }
             // Resolve schema.table.column
             (CelExpr::Member(s, t), Member::Attribute(c)) => match (*s, *t) {
-                (CelExpr::Ident(s), Member::Attribute(t)) if tp.schemas.contains(&*s) => {
-                    SqlExpr::Column(ColumnRef::SchemaTableColumn(alias(s), alias(t), alias(c)))
+                (CelExpr::Ident(s), Member::Attribute(t)) if tp.schemas.contains_key(&*s) => {
+                    SqlExpr::Column(ColumnRef::SchemaTableColumn(
+                        alias(tp.schemas.get(&*s).unwrap()),
+                        alias(t),
+                        alias(c),
+                    ))
                 }
                 (s, t) => SqlExpr::Binary(
                     Box::new(CelExpr::Member(Box::new(s), Box::new(t)).into_sql(tp)?),
@@ -323,12 +350,11 @@ mod test {
 
     #[test]
     fn bike() {
-        let tp = Transpiler {
-            variables: Default::default(),
-            columns: ["my_col".into()].into(),
-            tables: ["my_tab".into()].into(),
-            schemas: ["my_sch".into()].into(),
-        };
+        let tp = Transpiler::new()
+            .column("my_col")
+            .column_alias("my_alias", "hidden")
+            .table("my_tab")
+            .schema("my_sch");
 
         fn helper(code: &str, tp: &Transpiler) -> String {
             let q = Query::select()
@@ -339,6 +365,7 @@ mod test {
         }
 
         assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
+        assert_eq!(helper("my_alias", &tp), r#"SELECT "hidden""#);
         assert_eq!(helper("my_tab", &tp), r#"SELECT $1"#);
         assert_eq!(helper("other", &tp), r#"SELECT $1"#);
         assert_eq!(helper("my_tab.my_col", &tp), r#"SELECT "my_tab"."my_col""#);

@@ -1,7 +1,7 @@
 A crate to convert CEL expressions to SQL expression.
 
 ## **NOTE ON CORRECTNESS** 
-This crate uses a mostly naive mapping of CEL expressions to equivalent SQL expression when converting. As such certain nuances as described in the [CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md) may not be reproduces correctly, since the evaluatin relies on SQL semantics rather then CEL semantics.
+This crate uses a mostly naive mapping of CEL expressions to equivalent SQL expression when converting. As such certain nuances as described in the [CEL language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md) may not be reproduced correctly, since the evaluation relies on SQL semantics rather then CEL semantics.
 
 A non-exhaustive list of equivalent/diverging expressions can be found in `fuzzing.rs`
 

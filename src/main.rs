@@ -34,6 +34,9 @@ struct Cli {
 
     #[clap(long)]
     accept_unknown_types: bool,
+
+    #[clap(long)]
+    trigger_mode: bool,
 }
 
 impl Cli {
@@ -45,6 +48,7 @@ impl Cli {
             schemas,
             types,
             accept_unknown_types,
+            trigger_mode,
         } = self;
 
         let variables = variables
@@ -110,7 +114,11 @@ impl Cli {
             schemas,
             types,
             accept_unknown_types,
+            trigger_mode,
+            ..Default::default()
         }
+        .record("NEW")
+        .record("OLD")
     }
 }
 

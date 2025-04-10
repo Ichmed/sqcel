@@ -16,6 +16,12 @@ pub struct Transpiler {
     ///
     /// Members of theses identifiers will be interpreted as column names
     pub(crate) tables: HashMap<String, String>,
+    /// These identifiers are treated as record names. This is usually
+    /// only usefull for use in triggers where the records `NEW` and `OLD`
+    /// exist
+    ///
+    /// Members of theses identifiers will be interpreted as column names
+    pub(crate) records: HashMap<String, String>,
     /// These identifiers are treated as schema names
     ///
     /// Members of theses identifiers will be interpreted as table names
@@ -30,6 +36,11 @@ pub struct Transpiler {
     ///
     /// Known types will still be valdiated
     pub(crate) accept_unknown_types: bool,
+
+    /// Transform all column accesses into record accesses
+    ///
+    /// e.g. `foo` becomes `NEW."foo"`
+    pub(crate) trigger_mode: bool,
 }
 impl Transpiler {
     pub fn new() -> Self {
@@ -86,6 +97,16 @@ impl Transpiler {
         self
     }
 
+    pub fn record(mut self, record: impl ToString) -> Self {
+        self.records.insert(record.to_string(), record.to_string());
+        self
+    }
+
+    pub fn record_alias(mut self, alias: impl ToString, record: impl ToString) -> Self {
+        self.records.insert(alias.to_string(), record.to_string());
+        self
+    }
+
     pub fn types(mut self, types: HashMap<String, protobuf::descriptor::DescriptorProto>) -> Self {
         self.types = types;
         self
@@ -96,10 +117,19 @@ impl Transpiler {
         self
     }
 
+    pub fn trigger_mode(mut self, mode: bool) -> Self {
+        self.trigger_mode = mode;
+        self
+    }
+
     fn resolve_ident(&self, iden: &str) -> Result<SqlExpr> {
         Ok(match iden {
             iden if self.columns.contains_key(iden) => {
-                SqlExpr::Column(ColumnRef::Column(alias(self.columns.get(iden).unwrap())))
+                if self.trigger_mode {
+                    SqlExpr::Custom(format!("NEW.{iden:?}"))
+                } else {
+                    SqlExpr::Column(ColumnRef::Column(alias(self.columns.get(iden).unwrap())))
+                }
             }
             iden => self
                 .variables
@@ -161,7 +191,9 @@ impl ToSql<SqlExpr> for CelExpr {
             CelExpr::And(a, b) => a.into_sql(tp)?.add(b.into_sql(tp)?),
             CelExpr::Unary(unary_op, expression) => (unary_op, *expression).into_sql(tp)?,
             CelExpr::Member(expression, member) => (*expression, *member).into_sql(tp)?,
-            CelExpr::FunctionCall(fun, rec, args) => function_call(*fun, rec, args, tp)?,
+            CelExpr::FunctionCall(fun, rec, args) => {
+                function_call(*fun, rec.map(|x| *x), args, tp)?
+            }
             CelExpr::List(items) => list(items, tp)?,
             CelExpr::Map(items) => map(items, tp)?,
             CelExpr::Atom(atom) => atom.into_sql(tp)?,
@@ -261,21 +293,25 @@ fn _obj(items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> 
 
 fn function_call(
     ident: CelExpr,
-    receiver: Option<Box<CelExpr>>,
+    receiver: Option<CelExpr>,
     args: Vec<CelExpr>,
     tp: &Transpiler,
 ) -> Result<SqlExpr> {
     match ident {
         // Clone makes me sad ;(
         CelExpr::Ident(i) => match (i.as_str(), receiver, args.as_slice()) {
+            // Default conversions
             ("int", _, [exp, ..]) => json_cast("integer", exp.clone(), tp),
-            ("str", _, [exp, ..]) => json_cast("text", exp.clone(), tp),
+            ("string", _, [exp, ..]) => json_cast("text", exp.clone(), tp),
             ("bool", _, [exp, ..]) => json_cast("boolean", exp.clone(), tp),
-            ("float", _, [exp, ..]) => json_cast("double", exp.clone(), tp),
+            ("double", _, [exp, ..]) => json_cast("double precision", exp.clone(), tp),
+
+            // Custom conversions
+
+            // Fall through
             (name, receiver, _) => Ok(SqlExpr::FunctionCall(
                 Func::cust(Alias::new(name)).args(
                     receiver
-                        .map(|x| *x)
                         .into_iter()
                         .chain(args)
                         .map(|x| x.into_sql(tp))
@@ -287,6 +323,7 @@ fn function_call(
     }
 }
 
+#[inline]
 fn json_cast(ty: &str, exp: CelExpr, tp: &Transpiler) -> Result<SqlExpr> {
     Ok(
         SqlExpr::FunctionCall(Func::cust(Alias::new("nullif")).arg(exp.into_sql(tp)?).arg(
@@ -353,6 +390,9 @@ impl ToSql<SqlExpr> for (CelExpr, Member) {
             // Turn a protobuf message into a dict
             (CelExpr::Ident(name), Member::Fields(items)) => obj(&name, items, tp)?,
             // Resolve table.column access
+            (CelExpr::Ident(t), Member::Attribute(c)) if tp.records.contains_key(&*t) => {
+                SqlExpr::Custom(format!("{t}.{c:?}"))
+            }
             (CelExpr::Ident(t), Member::Attribute(c)) if tp.tables.contains_key(&*t) => {
                 SqlExpr::Column(ColumnRef::TableColumn(
                     alias(tp.tables.get(&*t).unwrap()),

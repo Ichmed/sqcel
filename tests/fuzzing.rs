@@ -67,6 +67,7 @@ async fn from_cel<T: DeserializeOwned>(code: &str) -> anyhow::Result<T> {
     }
 }
 
+#[allow(unused)]
 macro_rules! good {
     ($(#[$($attrss:tt)*])* $name:ident = $src:literal : $ty:ident) => {
         #[tokio::test]
@@ -80,6 +81,7 @@ macro_rules! good {
     };
 }
 
+#[allow(unused)]
 macro_rules! diverge {
     ($(#[$($attrss:tt)*])* $name:ident = $src:literal : $ty:ident) => {
         #[tokio::test]
@@ -94,6 +96,7 @@ macro_rules! diverge {
     };
 }
 
+#[allow(unused)]
 macro_rules! bug_sql {
     ($(#[$($attrss:tt)*])* $name:ident = $src:literal : $ty:ident) => {
         #[tokio::test]
@@ -106,6 +109,7 @@ macro_rules! bug_sql {
     };
 }
 
+#[allow(unused)]
 macro_rules! bug_cel {
     ($(#[$($attrss:tt)*])* $name:ident = $src:literal : $ty:ident) => {
         #[tokio::test]
@@ -118,6 +122,7 @@ macro_rules! bug_cel {
     };
 }
 
+#[allow(unused)]
 macro_rules! bug_both {
     ($(#[$($attrss:tt)*])* $name:ident = $src:literal : $ty:ident) => {
         #[tokio::test]

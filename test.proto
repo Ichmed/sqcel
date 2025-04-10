@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+message M {
+    int64 needed = 1;
+    optional int64 not_needed = 2;
+}

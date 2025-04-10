@@ -22,6 +22,14 @@ pub struct Transpiler {
     ///
     /// Members of those identifiers will be interpreted as column names
     pub(crate) schemas: HashMap<String, String>,
+
+    /// List of known message types
+    pub(crate) types: HashMap<String, protobuf::descriptor::DescriptorProto>,
+
+    /// Whether to accept unknown types
+    ///
+    /// Known types will still be valdiated
+    pub(crate) accept_unknown_types: bool,
 }
 impl Transpiler {
     pub fn new() -> Self {
@@ -67,6 +75,16 @@ impl Transpiler {
         self
     }
 
+    pub fn types(mut self, types: HashMap<String, protobuf::descriptor::DescriptorProto>) -> Self {
+        self.types = types;
+        self
+    }
+
+    pub fn accept_unknown_types(mut self, accept: bool) -> Self {
+        self.accept_unknown_types = accept;
+        self
+    }
+
     fn resolve_ident(&self, iden: &str) -> Result<SqlExpr> {
         Ok(match iden {
             iden if self.columns.contains_key(iden) => {
@@ -77,6 +95,7 @@ impl Transpiler {
                 .get(iden)
                 .map(|v| SqlExpr::Constant(v.clone()))
                 .unwrap_or_else(|| {
+                    // SqlExpr::Value::String::new(iden)
                     SqlExpr::Value(sea_query::Value::String(Some(Box::new(iden.to_owned()))))
                 }),
         })
@@ -95,6 +114,16 @@ pub enum ParseError {
     CelError(#[from] cel_parser::error::ParseError),
     #[error("A non ident function name was supplied")]
     NonIdentFunctionName,
+    #[error(
+        "Transpiler bug: Tried to convert Members::Fields directly (should be caught in a previous stage)"
+    )]
+    BugDirectFields,
+    #[error("Unknown message type `{}`", .0)]
+    UnknownType(String),
+    #[error("Unknown field `{}` on type `{}`", .1, .0)]
+    UnknownField(String, String),
+    #[error("Message of type `{}` is missing the fields: {:?}", .0, .1)]
+    MissingFields(String, Vec<String>),
 }
 
 pub type Result<T> = std::result::Result<T, ParseError>;
@@ -121,9 +150,7 @@ impl ToSql<SqlExpr> for CelExpr {
             CelExpr::And(a, b) => a.into_sql(tp)?.add(b.into_sql(tp)?),
             CelExpr::Unary(unary_op, expression) => (unary_op, *expression).into_sql(tp)?,
             CelExpr::Member(expression, member) => (*expression, *member).into_sql(tp)?,
-            CelExpr::FunctionCall(ident, receiver, args) => {
-                function_call(*ident, receiver, args, tp)?
-            }
+            CelExpr::FunctionCall(fun, rec, args) => function_call(*fun, rec, args, tp)?,
             CelExpr::List(items) => list(items, tp)?,
             CelExpr::Map(items) => map(items, tp)?,
             CelExpr::Atom(atom) => atom.into_sql(tp)?,
@@ -134,7 +161,7 @@ impl ToSql<SqlExpr> for CelExpr {
 
 fn list(items: Vec<CelExpr>, tp: &Transpiler) -> Result<SqlExpr> {
     Ok(SqlExpr::FunctionCall(
-        Func::cust(Alias::new("jsonb_build_list")).args(
+        Func::cust(Alias::new("jsonb_build_array")).args(
             items
                 .into_iter()
                 .map(|x| x.into_sql(tp))
@@ -154,7 +181,56 @@ fn map(items: Vec<(CelExpr, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
     ))
 }
 
-fn obj(items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
+/// Verify and build an object
+fn obj(type_name: &str, items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
+    // Verify struct layout
+    let type_info = match tp.types.get(type_name) {
+        Some(ty) => ty,
+        None if tp.accept_unknown_types => return _obj(items, tp),
+        None => return Err(ParseError::UnknownType(type_name.to_owned())),
+    };
+
+    let mut fields: HashMap<String, bool> = type_info
+        .field
+        .iter()
+        .flat_map(|f| {
+            f.name
+                .as_ref()
+                .map(|name| (name.clone(), f.proto3_optional.unwrap_or_default()))
+        })
+        .collect();
+
+    // Remove all fields that _are_ in the message and error if there is an unknwon field
+    items
+        .iter()
+        .flat_map(|(name, _)| fields.remove(&**name).is_none().then_some(name))
+        .next()
+        .map(|f| {
+            Err(ParseError::UnknownField(
+                type_name.to_owned(),
+                (**f).clone(),
+            ))
+        })
+        .unwrap_or(Ok(()))?;
+
+    // Error if there is a field missing in the message that is _not_ optional
+    let missing_fields: Vec<_> = fields
+        .into_iter()
+        .filter_map(|(k, v)| (!v).then_some(k))
+        .collect();
+
+    if !missing_fields.is_empty() {
+        return Err(ParseError::MissingFields(
+            type_name.to_owned(),
+            missing_fields,
+        ));
+    }
+
+    _obj(items, tp)
+}
+
+/// Build an object directly without comparing it to the list of known types first
+fn _obj(items: Vec<(Arc<String>, CelExpr)>, tp: &Transpiler) -> Result<SqlExpr> {
     Ok(SqlExpr::FunctionCall(
         Func::cust(Alias::new("jsonb_build_object")).args(
             items
@@ -264,8 +340,7 @@ impl ToSql<SqlExpr> for (CelExpr, Member) {
     fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
         Ok(match self {
             // Turn a protobuf message into a dict
-            // TODO: validate the structure first
-            (CelExpr::Ident(_), Member::Fields(items)) => obj(items, tp)?,
+            (CelExpr::Ident(name), Member::Fields(items)) => obj(&name, items, tp)?,
             // Resolve table.column access
             (CelExpr::Ident(t), Member::Attribute(c)) if tp.tables.contains_key(&*t) => {
                 SqlExpr::Column(ColumnRef::TableColumn(
@@ -304,65 +379,88 @@ impl ToSql<SqlExpr> for Member {
                 SqlExpr::Constant(Value::String(Some(Box::new((*iden).to_owned()))))
             }
             Member::Index(expression) => expression.into_sql(tp)?,
-            Member::Fields(items) => obj(items, tp)?,
+            Member::Fields(_) => return Err(ParseError::BugDirectFields),
         })
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+
     use sea_query::{PostgresQueryBuilder, Query};
 
     use crate::transpiler::Transpiler;
 
-    use super::ToSql;
     #[test]
     fn test() {
-        let x = "int({bar: 5}.bar) + 1 == -3 ? 10 : 5";
-        println!("{x}");
-        let x = cel_parser::parse(x)
+        let tp = Transpiler::new();
+
+        let input = r#"int(my_var.foo) + null + 1 == -3 ? 10 : 5"#;
+        let sql = helper(input, &tp);
+        println!("{input}\n{sql}");
+    }
+
+    fn read_proto() -> HashMap<String, protobuf::descriptor::DescriptorProto> {
+        protobuf_parse::Parser::new()
+            .pure()
+            .include(".")
+            .input("test.proto")
+            .parse_and_typecheck()
             .unwrap()
-            .into_sql(&Transpiler::new())
-            .unwrap();
-        let x = Query::select().expr(x).build(PostgresQueryBuilder);
-        println!("{}", x.0);
+            .file_descriptors
+            .remove(0)
+            .message_type
+            .into_iter()
+            .map(|m| (m.name().to_owned(), m))
+            .collect()
     }
 
-    #[test]
-    fn funtest() {
-        dbg!(cel_parser::parse(r#"M{}.value"#).unwrap());
-    }
-
-    #[test]
-    fn trigger() {
+    fn helper(code: &str, tp: &Transpiler) -> String {
         let q = Query::select()
-            .expr(
-                Transpiler::new()
-                    .var("input_a", "foo")
-                    .column("condition")
-                    .transpile(r#"{"test": condition ? input_a : 5, "data": data}"#)
-                    .unwrap(),
-            )
-            .build(PostgresQueryBuilder);
-        println!("{}", q.0);
-        dbg!(q.1);
+            .expr(tp.transpile(code).unwrap())
+            .build(PostgresQueryBuilder)
+            .0;
+        q
     }
 
     #[test]
-    fn bike() {
+    #[should_panic]
+    fn proto_unknwon_field() {
+        Transpiler::new()
+            .types(read_proto())
+            .transpile(r#"M{unknown: 5}"#)
+            .unwrap();
+    }
+
+    #[test]
+    fn proto_fields() {
+        let tp = Transpiler::new().types(read_proto());
+        assert_eq!(
+            helper(r#"M{needed: 5, not_needed: 5}"#, &tp),
+            r#"SELECT jsonb_build_object('needed', 5, 'not_needed', 5)"#
+        );
+        assert_eq!(
+            helper(r#"M{needed: 5}"#, &tp),
+            r#"SELECT jsonb_build_object('needed', 5)"#
+        );
+    }
+    #[test]
+    #[should_panic]
+    fn proto_missing_field() {
+        Transpiler::new()
+            .types(read_proto())
+            .transpile(r#"M{not_needed: 5}"#)
+            .unwrap();
+    }
+
+    #[test]
+    fn table_access() {
         let tp = Transpiler::new()
             .column("my_col")
             .column_alias("my_alias", "hidden")
             .table("my_tab")
             .schema("my_sch");
-
-        fn helper(code: &str, tp: &Transpiler) -> String {
-            let q = Query::select()
-                .expr(tp.transpile(code).unwrap())
-                .build(PostgresQueryBuilder)
-                .0;
-            q
-        }
 
         assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
         assert_eq!(helper("my_alias", &tp), r#"SELECT "hidden""#);

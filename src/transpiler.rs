@@ -45,6 +45,17 @@ impl Transpiler {
         self
     }
 
+    pub fn vars(
+        mut self,
+        vars: impl IntoIterator<Item = (impl ToString, impl Into<Value>)>,
+    ) -> Self {
+        self.variables.extend(
+            vars.into_iter()
+                .map(|(key, value)| (key.to_string(), value.into())),
+        );
+        self
+    }
+
     pub fn column(mut self, column: impl ToString) -> Self {
         self.columns.insert(column.to_string(), column.to_string());
         self

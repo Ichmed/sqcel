@@ -1,15 +1,41 @@
 use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, UnaryOp};
+use derive_builder::Builder;
 use sea_query::{
-    Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, SeaRc, SimpleExpr as SqlExpr, Value,
+    Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, Query, SeaRc, SimpleExpr as SqlExpr,
+    SubQueryStatement, Value,
 };
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;
 
-#[derive(Debug, Default)]
+/// A simple example
+///```
+/// # use sqcel::{Transpiler, Query, PostgresQueryBuilder};
+/// // Create a `Transpiler`
+/// let my_expr = Transpiler::new().transpile("5").unwrap();
+/// // Use a sea_query `Query` to actually use the result
+/// assert_eq!(
+///     Query::select().expr(my_expr).to_string(PostgresQueryBuilder),
+///     r#"SELECT 5"#
+/// )
+///```
+/// Or more complex
+///```
+/// # use sqcel::{Transpiler, Query, PostgresQueryBuilder};
+/// // Create a `Transpiler` and set a variable and column
+/// let tp = Transpiler::new().var("foo", 2).column("some_col").build();
+/// let code = r#"int({"val": foo}.foo) + 1 + some_col"#;
+/// let my_expr = tp.transpile(code).unwrap();
+/// assert_eq!(
+///     Query::select().expr(my_expr).to_string(PostgresQueryBuilder),
+///     r#"SELECT CAST(nullif(jsonb_build_object('val', 2) -> 'foo', 'null') AS integer) + 1 + "some_col""#
+/// )
+///```
+#[derive(Debug, Default, Builder)]
+#[builder(default, build_fn(name = "_build", private))]
 pub struct Transpiler {
     /// Identifiers included in vars will become
     /// constants during conversion (instead of bind params)
-    pub(crate) variables: HashMap<String, Value>,
+    pub(crate) variables: HashMap<String, SqlExpr>,
     /// These identifiers are treated as column names
     pub(crate) columns: HashMap<String, String>,
     /// These identifiers are treated as table names
@@ -42,84 +68,41 @@ pub struct Transpiler {
     /// e.g. `foo` becomes `NEW."foo"`
     pub(crate) trigger_mode: bool,
 }
+
 impl Transpiler {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> TranspilerBuilder {
+        TranspilerBuilder::create_empty()
     }
 
     pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
-        cel_parser::parse(src)?.into_sql(self)
+        self.transpile_expr(cel_parser::parse(src)?)
     }
 
-    pub fn var(mut self, key: impl ToString, val: impl Into<Value>) -> Self {
-        self.variables.insert(key.to_string(), val.into());
-        self
+    pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
+        expr.into_sql(self)
     }
 
-    pub fn vars(
-        mut self,
-        vars: impl IntoIterator<Item = (impl ToString, impl Into<Value>)>,
-    ) -> Self {
-        self.variables.extend(
-            vars.into_iter()
-                .map(|(key, value)| (key.to_string(), value.into())),
-        );
-        self
-    }
-
-    pub fn column(mut self, column: impl ToString) -> Self {
-        self.columns.insert(column.to_string(), column.to_string());
-        self
-    }
-
-    pub fn column_alias(mut self, alias: impl ToString, column: impl ToString) -> Self {
-        self.columns.insert(alias.to_string(), column.to_string());
-        self
-    }
-
-    pub fn table(mut self, table: impl ToString) -> Self {
-        self.tables.insert(table.to_string(), table.to_string());
-        self
-    }
-
-    pub fn table_alias(mut self, alias: impl ToString, table: impl ToString) -> Self {
-        self.tables.insert(alias.to_string(), table.to_string());
-        self
-    }
-
-    pub fn schema(mut self, schema: impl ToString) -> Self {
-        self.schemas.insert(schema.to_string(), schema.to_string());
-        self
-    }
-
-    pub fn schema_alias(mut self, alias: impl ToString, schema: impl ToString) -> Self {
-        self.schemas.insert(alias.to_string(), schema.to_string());
-        self
-    }
-
-    pub fn record(mut self, record: impl ToString) -> Self {
-        self.records.insert(record.to_string(), record.to_string());
-        self
-    }
-
-    pub fn record_alias(mut self, alias: impl ToString, record: impl ToString) -> Self {
-        self.records.insert(alias.to_string(), record.to_string());
-        self
-    }
-
-    pub fn types(mut self, types: HashMap<String, protobuf::descriptor::DescriptorProto>) -> Self {
-        self.types = types;
-        self
-    }
-
-    pub fn accept_unknown_types(mut self, accept: bool) -> Self {
-        self.accept_unknown_types = accept;
-        self
-    }
-
-    pub fn trigger_mode(mut self, mode: bool) -> Self {
-        self.trigger_mode = mode;
-        self
+    pub fn to_builder(&self) -> TranspilerBuilder {
+        let Transpiler {
+            variables,
+            columns,
+            tables,
+            records,
+            schemas,
+            types,
+            accept_unknown_types,
+            trigger_mode,
+        } = self;
+        TranspilerBuilder {
+            variables: Some(variables.clone()),
+            columns: Some(columns.clone()),
+            tables: Some(tables.clone()),
+            records: Some(records.clone()),
+            schemas: Some(schemas.clone()),
+            types: Some(types.clone()),
+            accept_unknown_types: Some(accept_unknown_types.clone()),
+            trigger_mode: Some(trigger_mode.clone()),
+        }
     }
 
     fn resolve_ident(&self, iden: &str) -> Result<SqlExpr> {
@@ -134,12 +117,102 @@ impl Transpiler {
             iden => self
                 .variables
                 .get(iden)
-                .map(|v| SqlExpr::Constant(v.clone()))
+                .map(|v| v.clone())
                 .unwrap_or_else(|| {
-                    // SqlExpr::Value::String::new(iden)
+                    // I know this is wrong, but there is no SqlExpr::Bind,
+                    // so this is the only way to propagate the position and name
+                    // of the param "correctly"
                     SqlExpr::Value(sea_query::Value::String(Some(Box::new(iden.to_owned()))))
                 }),
         })
+    }
+}
+
+impl TranspilerBuilder {
+    pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
+        self.transpile_expr(cel_parser::parse(src)?)
+    }
+
+    pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
+        expr.into_sql(&self._build().unwrap())
+    }
+
+    pub fn var(&mut self, key: impl ToString, val: impl Into<Value>) -> &mut Self {
+        self.variables
+            .get_or_insert_default()
+            .insert(key.to_string(), SqlExpr::Constant(val.into()));
+        self
+    }
+
+    pub fn vars(
+        &mut self,
+        vars: impl IntoIterator<Item = (impl ToString, impl Into<Value>)>,
+    ) -> &mut Self {
+        self.variables.get_or_insert_default().extend(
+            vars.into_iter()
+                .map(|(key, val)| (key.to_string(), SqlExpr::Constant(val.into()))),
+        );
+        self
+    }
+
+    pub fn build(&mut self) -> Transpiler {
+        self._build().unwrap()
+    }
+
+    pub fn column(&mut self, column: impl ToString) -> &mut Self {
+        self.columns
+            .get_or_insert_default()
+            .insert(column.to_string(), column.to_string());
+        self
+    }
+
+    pub fn column_alias(&mut self, alias: impl ToString, column: impl ToString) -> &mut Self {
+        self.columns
+            .get_or_insert_default()
+            .insert(alias.to_string(), column.to_string());
+        self
+    }
+
+    pub fn table(&mut self, table: impl ToString) -> &mut Self {
+        self.tables
+            .get_or_insert_default()
+            .insert(table.to_string(), table.to_string());
+        self
+    }
+
+    pub fn table_alias(&mut self, alias: impl ToString, table: impl ToString) -> &mut Self {
+        self.tables
+            .get_or_insert_default()
+            .insert(alias.to_string(), table.to_string());
+        self
+    }
+
+    pub fn schema(&mut self, schema: impl ToString) -> &mut Self {
+        self.schemas
+            .get_or_insert_default()
+            .insert(schema.to_string(), schema.to_string());
+        self
+    }
+
+    pub fn schema_alias(&mut self, alias: impl ToString, schema: impl ToString) -> &mut Self {
+        self.schemas
+            .get_or_insert_default()
+            .insert(alias.to_string(), schema.to_string());
+        self
+    }
+
+    pub fn record(&mut self, record: impl ToString) -> &mut Self {
+        self.records
+            .get_or_insert_default()
+            .insert(record.to_string(), record.to_string());
+        self
+    }
+
+    pub fn record_alias(&mut self, alias: impl ToString, record: impl ToString) -> &mut Self {
+        self.records
+            .get_or_insert_default()
+            .insert(alias.to_string(), record.to_string());
+        self
     }
 }
 
@@ -301,13 +374,115 @@ fn function_call(
         // Clone makes me sad ;(
         CelExpr::Ident(i) => match (i.as_str(), receiver, args.as_slice()) {
             // Default conversions
-            ("int", _, [exp, ..]) => json_cast("integer", exp.clone(), tp),
-            ("string", _, [exp, ..]) => json_cast("text", exp.clone(), tp),
-            ("bool", _, [exp, ..]) => json_cast("boolean", exp.clone(), tp),
-            ("double", _, [exp, ..]) => json_cast("double precision", exp.clone(), tp),
+            ("int", _, [exp]) => json_cast("integer", exp.clone(), tp),
+            ("string", _, [exp]) => json_cast("text", exp.clone(), tp),
+            ("bool", _, [exp]) => json_cast("boolean", exp.clone(), tp),
+            ("double", _, [exp]) => json_cast("double precision", exp.clone(), tp),
 
             // Custom conversions
 
+            // Macros
+            ("map", Some(rec), [CelExpr::Ident(a), transform]) => {
+                let inner_context = tp.to_builder().column(a).build();
+
+                let transform = inner_context.transpile_expr(transform.clone())?;
+                let rec = rec.into_sql(tp)?;
+                let mut expr_inner = Query::select();
+                expr_inner.expr(transform).from_function(
+                    Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                    // Func::coalesce([
+                    //     SqlExpr::FunctionCall(
+                    //         Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                    //     ),
+                    //     SqlExpr::FunctionCall(Func::cast_as(
+                    //         Func::cust(alias("jsonb_object_keys")).arg(rec),
+                    //         alias("jsonb"),
+                    //     )),
+                    // ]),
+                    alias(a),
+                );
+
+                Ok(SqlExpr::FunctionCall(Func::cast_as(
+                    Func::cust(alias("to_json")).arg(Func::cust(alias("ARRAY")).arg(
+                        SqlExpr::SubQuery(
+                            None,
+                            Box::new(SubQueryStatement::SelectStatement(expr_inner)),
+                        ),
+                    )),
+                    alias("jsonb"),
+                )))
+            }
+            ("map", Some(rec), [CelExpr::Ident(a), predicate, transform]) => {
+                let inner_context = tp.to_builder().column(a).build();
+
+                let predicate = inner_context.transpile_expr(predicate.clone())?;
+                let transform = inner_context.transpile_expr(transform.clone())?;
+
+                let rec = rec.into_sql(tp)?;
+
+                let mut expr_inner = Query::select();
+                expr_inner
+                    .expr(transform)
+                    .and_where(predicate)
+                    .from_function(
+                        Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                        // Func::coalesce([
+                        //     SqlExpr::FunctionCall(
+                        //         Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                        //     ),
+                        //     SqlExpr::FunctionCall(Func::cast_as(
+                        //         Func::cust(alias("jsonb_object_keys")).arg(rec),
+                        //         alias("jsonb"),
+                        //     )),
+                        // ]),
+                        alias(a),
+                    );
+
+                Ok(SqlExpr::FunctionCall(Func::cast_as(
+                    Func::cust(alias("to_json")).arg(Func::cust(alias("ARRAY")).arg(
+                        SqlExpr::SubQuery(
+                            None,
+                            Box::new(SubQueryStatement::SelectStatement(expr_inner)),
+                        ),
+                    )),
+                    alias("jsonb"),
+                )))
+            }
+            ("filter", Some(rec), [CelExpr::Ident(a), predicate]) => {
+                let inner_context = tp.to_builder().column(a).build();
+
+                let predicate = inner_context.transpile_expr(predicate.clone())?;
+
+                let rec = rec.into_sql(tp)?;
+
+                let mut expr_inner = Query::select();
+                expr_inner
+                    .column(alias(a))
+                    .and_where(predicate)
+                    .from_function(
+                        Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                        // Func::coalesce([
+                        //     SqlExpr::FunctionCall(
+                        //         Func::cust(alias("jsonb_array_elements")).arg(rec.clone()),
+                        //     ),
+                        //     SqlExpr::FunctionCall(Func::cast_as(
+                        //         Func::cust(alias("jsonb_object_keys")).arg(rec),
+                        //         alias("jsonb"),
+                        //     )),
+                        // ]),
+                        alias(a),
+                    );
+
+                Ok(SqlExpr::FunctionCall(Func::cast_as(
+                    Func::cust(alias("to_json")).arg(Func::cust(alias("ARRAY")).arg(
+                        SqlExpr::SubQuery(
+                            None,
+                            Box::new(SubQueryStatement::SelectStatement(expr_inner)),
+                        ),
+                    )),
+                    alias("jsonb"),
+                )))
+            }
             // Fall through
             (name, receiver, _) => Ok(SqlExpr::FunctionCall(
                 Func::cust(Alias::new(name)).args(
@@ -439,17 +614,20 @@ impl ToSql<SqlExpr> for Member {
 mod test {
     use std::collections::HashMap;
 
+    use indoc::indoc;
     use sea_query::{PostgresQueryBuilder, Query};
 
     use crate::transpiler::Transpiler;
 
+    use super::TranspilerBuilder;
+
     #[test]
     fn test() {
-        let tp = Transpiler::new();
+        let tp = Transpiler::new().build();
 
-        let input = r#"int(my_var.foo) + null + 1 == -3 ? 10 : 5"#;
+        let input = indoc!(r#"[1, 2, 3].map(x, int(x) > 1, int(x) + 1)"#);
         let sql = helper(input, &tp);
-        println!("{input}\n{sql}");
+        println!("{input}\n\n{sql}");
     }
 
     fn read_proto() -> HashMap<String, protobuf::descriptor::DescriptorProto> {
@@ -478,7 +656,7 @@ mod test {
     #[test]
     #[should_panic]
     fn proto_unknwon_field() {
-        Transpiler::new()
+        TranspilerBuilder::create_empty()
             .types(read_proto())
             .transpile(r#"M{unknown: 5}"#)
             .unwrap();
@@ -486,7 +664,7 @@ mod test {
 
     #[test]
     fn proto_fields() {
-        let tp = Transpiler::new().types(read_proto());
+        let tp = Transpiler::new().types(read_proto()).build();
         assert_eq!(
             helper(r#"M{needed: 5, not_needed: 5}"#, &tp),
             r#"SELECT jsonb_build_object('needed', 5, 'not_needed', 5)"#
@@ -499,19 +677,21 @@ mod test {
     #[test]
     #[should_panic]
     fn proto_missing_field() {
-        Transpiler::new()
+        TranspilerBuilder::create_empty()
             .types(read_proto())
+            .build()
             .transpile(r#"M{not_needed: 5}"#)
             .unwrap();
     }
 
     #[test]
     fn table_access() {
-        let tp = Transpiler::new()
+        let tp = TranspilerBuilder::create_empty()
             .column("my_col")
             .column_alias("my_alias", "hidden")
             .table("my_tab")
-            .schema("my_sch");
+            .schema("my_sch")
+            .build();
 
         assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
         assert_eq!(helper("my_alias", &tp), r#"SELECT "hidden""#);

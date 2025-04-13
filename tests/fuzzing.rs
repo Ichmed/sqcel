@@ -174,3 +174,15 @@ bug_both!(
     /// Namespaced classes are not yet implemented in the transpiler
     multi_level_message_classes = "some.Class{}": Value
 );
+
+// --- Macros
+
+// -- Map Array
+
+good!(map_array_correct = "[1, 2, 3].map(x, int(x) + 1) == [2, 3, 4]": bool);
+good!(map_array_not_incorrect = "[1, 2, 3].map(x, int(x) + 1) != [1, 2, 3]": bool);
+good!(filter_array_correct = "[1, 2, 3].map(x, int(x) > 1) == [2, 3]": bool);
+diverge!(filter_map_array_correct = "[1, 2, 3].map(x, int(x) > 1, int(x) + 1) == [3, 4]": bool);
+
+// -- Map Object
+bug_sql!(map_object_correct = r#"{"a": 1, "b": 1}.map(x, x) == ["a", "b"]"#: bool);

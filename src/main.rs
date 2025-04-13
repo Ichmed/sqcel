@@ -116,9 +116,9 @@ impl Cli {
             accept_unknown_types,
             trigger_mode,
             ..Default::default()
-        }
+        }.to_builder()
         .record("NEW")
-        .record("OLD")
+        .record("OLD").build()
     }
 }
 

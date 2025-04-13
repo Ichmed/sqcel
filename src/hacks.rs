@@ -1,4 +1,4 @@
-use crate::{Transpiler, transpiler::Result};
+use crate::{transpiler::Result, Transpiler};
 use sea_query::{Query, QueryBuilder};
 
 /// Get _just_ the expression and the bind params without a surrounding SELECT statement

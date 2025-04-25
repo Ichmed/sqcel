@@ -1,3 +1,4 @@
+#![cfg(feature = "fuzzing")]
 /*!
  * Test suite to find/document places where the SQL conversion and the
  * official [CEL specification](https://github.com/google/cel-spec/blob/master/doc/langdef.md) diverge

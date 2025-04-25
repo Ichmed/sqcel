@@ -19,6 +19,7 @@ thiserror = "2.0.12"
 default = ["serde_json", "cli"]
 serde_json = ["dep:serde_json", "dep:serde"]
 cli = ["dep:clap"]
+fuzzing = []
 
 [dev-dependencies]
 async-once-cell = "0.5.4"

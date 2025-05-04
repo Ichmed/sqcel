@@ -583,18 +583,16 @@ impl ToSql<SqlExpr> for (CelExpr, Member) {
                         alias(c),
                     ))
                 }
-                (s, t) => SqlExpr::Binary(
-                    Box::new(CelExpr::Member(Box::new(s), Box::new(t)).into_sql(tp)?),
-                    BinOper::Custom("->"),
-                    Box::new(Member::Attribute(c).into_sql(tp)?),
-                ),
-            },
-            (receiver, field) => SqlExpr::Binary(
-                Box::new(receiver.into_sql(tp)?),
-                BinOper::Custom("->"),
-                Box::new(field.into_sql(tp)?),
-            ),
-        })
+                (s, t) => CelExpr::Member(Box::new(s), Box::new(t))
+                    .into_sql(tp)?
+                    .cast_as(alias("jsonb"))
+                    .cast_json_field(Member::Attribute(c).into_sql(tp)?),
+                            },
+            (receiver, field) => receiver
+                .into_sql(tp)?
+                .cast_as(alias("jsonb"))
+                .cast_json_field(field.into_sql(tp)?),
+                    })
     }
 }
 
@@ -698,28 +696,34 @@ mod test {
         assert_eq!(helper("my_tab", &tp), r#"SELECT $1"#);
         assert_eq!(helper("other", &tp), r#"SELECT $1"#);
         assert_eq!(helper("my_tab.my_col", &tp), r#"SELECT "my_tab"."my_col""#);
-        assert_eq!(helper("other.thing", &tp), r#"SELECT $1 -> 'thing'"#);
-        assert_eq!(helper("other.my_col", &tp), r#"SELECT $1 -> 'my_col'"#);
+        assert_eq!(
+helper("other.thing", &tp),
+r#"SELECT CAST($1 AS jsonb) ->> 'thing'"#
+);
+        assert_eq!(
+helper("other.my_col", &tp),
+r#"SELECT CAST($1 AS jsonb) ->> 'my_col'"#
+);
         assert_eq!(
             helper("my_sch.my_tab.my_col", &tp),
             r#"SELECT "my_sch"."my_tab"."my_col""#
         );
         assert_eq!(
             helper("some.thing.else", &tp),
-            r#"SELECT ($1 -> 'thing') -> 'else'"#
+            r#"SELECT CAST((CAST($1 AS jsonb) ->> 'thing') AS jsonb) ->> 'else'"#
         );
         assert_eq!(
             helper("some.my_tab.else", &tp),
-            r#"SELECT ($1 -> 'my_tab') -> 'else'"#
+            r#"SELECT CAST((CAST($1 AS jsonb) ->> 'my_tab') AS jsonb) ->> 'else'"#
         );
 
         assert_eq!(
             helper("four.things.are.nice", &tp),
-            r#"SELECT (($1 -> 'things') -> 'are') -> 'nice'"#
+            r#"SELECT CAST((CAST((CAST($1 AS jsonb) ->> 'things') AS jsonb) ->> 'are') AS jsonb) ->> 'nice'"#
         );
         assert_eq!(
             helper("my_sch.things.are.nice", &tp),
-            r#"SELECT "my_sch"."things"."are" -> 'nice'"#
+            r#"SELECT CAST("my_sch"."things"."are" AS jsonb) ->> 'nice'"#
         );
     }
 }

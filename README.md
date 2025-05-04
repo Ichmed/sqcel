@@ -77,6 +77,9 @@ Note that in some contexts (such as trigger creation) bindings are not allowed, 
 All functions that are not explicitly defined are assumed to be DB internal functions and are forwarded accordingly. In this case, method calls are translated to function calls with the receiver as the first argument e.g. `foo.bar("baz")` becomes `bar(foo, 'baz')`
 
 ### Builtin Functions
+#### Macros
+The `map` and `filter` macros are available but currently only work on arrays, not on objects
+
 #### Conversions
 The functions 
  - `int(val) -> integer`

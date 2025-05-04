@@ -112,6 +112,7 @@ impl From<i64> for Variable {
 }
 
 impl Transpiler {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new() -> TranspilerBuilder {
         TranspilerBuilder::create_empty()
     }
@@ -142,8 +143,8 @@ impl Transpiler {
             records: Some(records.clone()),
             schemas: Some(schemas.clone()),
             types: Some(types.clone()),
-            accept_unknown_types: Some(accept_unknown_types.clone()),
-            trigger_mode: Some(trigger_mode.clone()),
+            accept_unknown_types: Some(*accept_unknown_types),
+            trigger_mode: Some(*trigger_mode),
         }
     }
 

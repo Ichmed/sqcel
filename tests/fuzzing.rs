@@ -150,6 +150,8 @@ good!(int32 = "1": i32);
 // deserialize int4 as a i64
 // good!(int64 = "1": i64);
 
+good!(simple_sum = "1 + 2": i32 == 3);
+
 good!(int_compare = "1 == 1": bool == true);
 
 // -- float --
@@ -166,6 +168,8 @@ good!(string_literal = "\"foobar\"": String == "foobar");
 // bug_sql!(float_64 = "1.1": f64);
 
 // --- Objects
+
+good!(extract_int = r#"int({"foo": 1}.foo)"#: i32 == 1);
 
 // -- Proto Messages --
 bug_cel!(

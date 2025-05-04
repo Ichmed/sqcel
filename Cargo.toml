@@ -14,16 +14,16 @@ sea-query = { version = "0.32.3", features = ["postgres-types", "with-json"] }
 serde = { version = "1.0.219", optional = true }
 serde_json = { version = "1.0.140", optional = true }
 thiserror = "2.0.12"
+cel-interpreter = { version = "0.9.0", features = ["json"] }
 
 [features]
-default = ["serde_json", "cli"]
+default = ["serde_json", "cli", "fuzzing"]
 serde_json = ["dep:serde_json", "dep:serde"]
 cli = ["dep:clap"]
 fuzzing = []
 
 [dev-dependencies]
 async-once-cell = "0.5.4"
-cel-interpreter = { version = "0.9.0", features = ["json"] }
 futures = "0.3.31"
 indoc = "2.0.6"
 serde_postgres = "0.2.0"

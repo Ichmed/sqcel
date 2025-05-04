@@ -1,10 +1,11 @@
+use cel_interpreter::{Context, Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, UnaryOp};
 use derive_builder::Builder;
 use sea_query::{
     Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, Query, SeaRc, SimpleExpr as SqlExpr,
     SubQueryStatement, Value, extension::postgres::PgExpr,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 use thiserror::Error;
 
 /// A simple example
@@ -21,13 +22,14 @@ use thiserror::Error;
 /// Or more complex
 ///```
 /// # use sqcel::{Transpiler, Query, PostgresQueryBuilder};
+/// # use cel_parser::Atom;
 /// // Create a `Transpiler` and set a variable and column
 /// let tp = Transpiler::new().var("foo", 2).column("some_col").build();
 /// let code = r#"int({"val": foo}.foo) + 1 + some_col"#;
 /// let my_expr = tp.transpile(code).unwrap();
 /// assert_eq!(
 ///     Query::select().expr(my_expr).to_string(PostgresQueryBuilder),
-///     r#"SELECT CAST(nullif(jsonb_build_object('val', 2) -> 'foo', 'null') AS integer) + 1 + "some_col""#
+///     r#"SELECT CAST((CAST(jsonb_build_object('val', 2) AS jsonb) ->> 'foo') AS integer) + 1 + "some_col""#
 /// )
 ///```
 #[derive(Debug, Default, Builder)]
@@ -35,7 +37,7 @@ use thiserror::Error;
 pub struct Transpiler {
     /// Identifiers included in vars will become
     /// constants during conversion (instead of bind params)
-    pub(crate) variables: HashMap<String, SqlExpr>,
+    pub(crate) variables: HashMap<String, Variable>,
     /// These identifiers are treated as column names
     pub(crate) columns: HashMap<String, String>,
     /// These identifiers are treated as table names
@@ -67,6 +69,46 @@ pub struct Transpiler {
     ///
     /// e.g. `foo` becomes `NEW."foo"`
     pub(crate) trigger_mode: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Variable {
+    Sql(SqlExpr),
+    Cel(CelExpr),
+}
+
+impl Variable {
+    fn to_cel_expr(&self) -> Option<Cow<'_, CelExpr>> {
+        match self {
+            Variable::Cel(expr) => Some(Cow::Borrowed(expr)),
+            _ => None,
+        }
+    }
+
+    fn to_sql(&self) -> Result<Cow<'_, SqlExpr>> {
+        match self {
+            Variable::Cel(atom) => atom.clone().into_sql(&Default::default()).map(Cow::Owned),
+            Variable::Sql(simple_expr) => Ok(Cow::Borrowed(simple_expr)),
+        }
+    }
+}
+
+impl From<CelExpr> for Variable {
+    fn from(value: CelExpr) -> Self {
+        Variable::Cel(value)
+    }
+}
+
+impl From<SqlExpr> for Variable {
+    fn from(value: SqlExpr) -> Self {
+        Variable::Sql(value)
+    }
+}
+
+impl From<i64> for Variable {
+    fn from(value: i64) -> Self {
+        Variable::Cel(CelExpr::Atom(Atom::Int(value)))
+    }
 }
 
 impl Transpiler {
@@ -117,14 +159,28 @@ impl Transpiler {
             iden => self
                 .variables
                 .get(iden)
-                .map(|v| v.clone())
+                .map(|v| v.to_sql())
+                .transpose()?
                 .unwrap_or_else(|| {
                     // I know this is wrong, but there is no SqlExpr::Bind,
                     // so this is the only way to propagate the position and name
                     // of the param "correctly"
-                    SqlExpr::Value(sea_query::Value::String(Some(Box::new(iden.to_owned()))))
-                }),
+                    Cow::Owned(SqlExpr::Value(sea_query::Value::String(Some(Box::new(
+                        iden.to_owned(),
+                    )))))
+                })
+                .into_owned(),
         })
+    }
+
+    fn to_context(&self) -> Result<Context> {
+        let mut c = Context::empty();
+        for (name, value) in self.variables.iter() {
+            if let Some(value) = value.to_cel_expr() {
+                c.add_variable_from_value(name, CelValue::resolve(value.as_ref(), &c)?)
+            };
+        }
+        Ok(c)
     }
 }
 
@@ -137,20 +193,20 @@ impl TranspilerBuilder {
         expr.into_sql(&self._build().unwrap())
     }
 
-    pub fn var(&mut self, key: impl ToString, val: impl Into<Value>) -> &mut Self {
+    pub fn var(&mut self, key: impl ToString, val: impl Into<Variable>) -> &mut Self {
         self.variables
             .get_or_insert_default()
-            .insert(key.to_string(), SqlExpr::Constant(val.into()));
+            .insert(key.to_string(), val.into());
         self
     }
 
     pub fn vars(
         &mut self,
-        vars: impl IntoIterator<Item = (impl ToString, impl Into<Value>)>,
+        vars: impl IntoIterator<Item = (impl ToString, impl Into<Variable>)>,
     ) -> &mut Self {
         self.variables.get_or_insert_default().extend(
             vars.into_iter()
-                .map(|(key, val)| (key.to_string(), SqlExpr::Constant(val.into()))),
+                .map(|(key, val)| (key.to_string(), val.into())),
         );
         self
     }
@@ -226,12 +282,16 @@ pub enum ParseError {
     NonIdentColumnFieldSchema,
     #[error(transparent)]
     CelError(#[from] cel_parser::error::ParseError),
+    #[error(transparent)]
+    CelResolveError(#[from] cel_interpreter::ExecutionError),
     #[error("A non ident function name was supplied")]
     NonIdentFunctionName,
     #[error(
         "Transpiler bug: Tried to convert Members::Fields directly (should be caught in a previous stage)"
     )]
     BugDirectFields,
+    #[error("Transpiler bug: Tried to bake a function item (should not propagate to the top)")]
+    BugBakedFunction,
     #[error("Unknown message type `{}`", .0)]
     UnknownType(String),
     #[error("Unknown field `{}` on type `{}`", .1, .0)]
@@ -246,8 +306,54 @@ trait ToSql<E> {
     fn into_sql(self, tp: &Transpiler) -> Result<E>;
 }
 
+impl ToSql<SqlExpr> for CelValue {
+    fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+        Ok(match self {
+            Self::Int(num) => SqlExpr::Constant(Value::BigInt(Some(num))),
+            Self::UInt(num) => SqlExpr::Constant(Value::BigUnsigned(Some(num))),
+            Self::Float(f) => SqlExpr::Constant(Value::Double(Some(f))),
+            Self::String(s) => SqlExpr::Constant(Value::String(Some(Box::new((*s).clone())))),
+            Self::Bytes(items) => SqlExpr::Constant(Value::Bytes(Some(Box::new((*items).clone())))),
+            Self::Bool(b) => SqlExpr::Constant(Value::Bool(Some(b))),
+            Self::Null => SqlExpr::Constant(Value::Int(None)),
+            Self::List(values) => SqlExpr::FunctionCall(
+                Func::cust(Alias::new("jsonb_build_array")).args(
+                    values
+                        .iter()
+                        .map(|x| x.clone().into_sql(tp))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            Self::Map(map) => SqlExpr::FunctionCall(
+                Func::cust(Alias::new("jsonb_build_object")).args(
+                    map.map
+                        .iter()
+                        .flat_map(|(a, b)| [a.clone().into_sql(tp), b.clone().into_sql(tp)])
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            Self::Function(_, _) => return Err(ParseError::BugBakedFunction),
+        })
+    }
+}
+
+impl ToSql<SqlExpr> for Key {
+    fn into_sql(self, _tp: &Transpiler) -> Result<SqlExpr> {
+        Ok(match self {
+            Self::Int(num) => SqlExpr::Constant(Value::BigInt(Some(num))),
+            Self::Uint(num) => SqlExpr::Constant(Value::BigUnsigned(Some(num))),
+            Self::Bool(b) => SqlExpr::Constant(Value::Bool(Some(b))),
+            Self::String(s) => SqlExpr::Constant(Value::String(Some(Box::new((*s).clone())))),
+        })
+    }
+}
+
 impl ToSql<SqlExpr> for CelExpr {
     fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
+        if let Ok(value) = CelValue::resolve(&self, &tp.to_context().unwrap()) {
+            return value.into_sql(tp);
+        }
+
         Ok(match self {
             CelExpr::Arithmetic(lhs, op, rhs) => lhs
                 .into_sql(tp)?
@@ -500,12 +606,7 @@ fn function_call(
 
 #[inline]
 fn json_cast(ty: &str, exp: CelExpr, tp: &Transpiler) -> Result<SqlExpr> {
-    Ok(
-        SqlExpr::FunctionCall(Func::cust(Alias::new("nullif")).arg(exp.into_sql(tp)?).arg(
-            SqlExpr::Constant(Value::String(Some(Box::new("null".to_owned())))),
-        ))
-        .cast_as(Alias::new(ty)),
-    )
+    Ok(exp.into_sql(tp)?.cast_as(alias(ty)))
 }
 
 impl ToSql<BinOper> for ArithmeticOp {
@@ -587,12 +688,12 @@ impl ToSql<SqlExpr> for (CelExpr, Member) {
                     .into_sql(tp)?
                     .cast_as(alias("jsonb"))
                     .cast_json_field(Member::Attribute(c).into_sql(tp)?),
-                            },
+            },
             (receiver, field) => receiver
                 .into_sql(tp)?
                 .cast_as(alias("jsonb"))
                 .cast_json_field(field.into_sql(tp)?),
-                    })
+        })
     }
 }
 
@@ -697,13 +798,13 @@ mod test {
         assert_eq!(helper("other", &tp), r#"SELECT $1"#);
         assert_eq!(helper("my_tab.my_col", &tp), r#"SELECT "my_tab"."my_col""#);
         assert_eq!(
-helper("other.thing", &tp),
-r#"SELECT CAST($1 AS jsonb) ->> 'thing'"#
-);
+            helper("other.thing", &tp),
+            r#"SELECT CAST($1 AS jsonb) ->> 'thing'"#
+        );
         assert_eq!(
-helper("other.my_col", &tp),
-r#"SELECT CAST($1 AS jsonb) ->> 'my_col'"#
-);
+            helper("other.my_col", &tp),
+            r#"SELECT CAST($1 AS jsonb) ->> 'my_col'"#
+        );
         assert_eq!(
             helper("my_sch.my_tab.my_col", &tp),
             r#"SELECT "my_sch"."my_tab"."my_col""#

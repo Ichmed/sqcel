@@ -2,10 +2,11 @@ pub mod hacks;
 pub mod transpiler;
 
 use crate::transpiler::Transpiler;
+use cel_parser::{Atom, Expression};
 use clap::Parser;
 use serde_json::Value;
 use sqcel::PostgresQueryBuilder;
-use std::{io::BufRead, path::PathBuf};
+use std::{io::BufRead, path::PathBuf, sync::Arc};
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -58,8 +59,27 @@ impl Cli {
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .expect("key:value pairs must contain a colon")
             })
-            .map(|(k, v)| (k, serde_json::from_str::<Value>(&v).unwrap().into()))
-            .collect();
+            .map(|(k, v)| {
+                (
+                    k,
+                    match serde_json::from_str::<Value>(&v).unwrap() {
+                        Value::Null => Atom::Null,
+                        Value::Bool(b) => Atom::Bool(b),
+                        Value::Number(number) if number.is_f64() => {
+                            Atom::Float(number.as_f64().unwrap())
+                        }
+                        Value::Number(number) if number.is_i64() => {
+                            Atom::Int(number.as_i64().unwrap())
+                        }
+                        Value::Number(number) if number.is_u64() => {
+                            Atom::UInt(number.as_u64().unwrap())
+                        }
+                        Value::String(s) => Atom::String(Arc::new(s)),
+                        _ => todo!(),
+                    },
+                )
+            })
+            .map(|(k, v)| (k, Expression::Atom(v)));
 
         let columns = columns
             .into_iter()
@@ -108,7 +128,6 @@ impl Cli {
         };
 
         Transpiler {
-            variables,
             columns,
             tables,
             schemas,
@@ -116,9 +135,12 @@ impl Cli {
             accept_unknown_types,
             trigger_mode,
             ..Default::default()
-        }.to_builder()
+        }
+        .to_builder()
+        .vars(variables)
         .record("NEW")
-        .record("OLD").build()
+        .record("OLD")
+        .build()
     }
 }
 

@@ -2,7 +2,7 @@ use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, 
 use derive_builder::Builder;
 use sea_query::{
     Alias, BinOper, CaseStatement, ColumnRef, DynIden, Func, Query, SeaRc, SimpleExpr as SqlExpr,
-    SubQueryStatement, Value,
+    SubQueryStatement, Value, extension::postgres::PgExpr,
 };
 use std::{collections::HashMap, sync::Arc};
 use thiserror::Error;

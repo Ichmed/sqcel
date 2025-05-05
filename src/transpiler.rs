@@ -1,4 +1,4 @@
-use cel_interpreter::{Context, Value as CelValue, objects::Key};
+use cel_interpreter::{Context, ExecutionError, Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, Atom, Expression as CelExpr, Member, RelationOp, UnaryOp};
 use derive_builder::Builder;
 use sea_query::{
@@ -327,7 +327,7 @@ pub enum ParseError {
     #[error(transparent)]
     CelError(#[from] cel_parser::error::ParseError),
     #[error(transparent)]
-    CelResolveError(#[from] cel_interpreter::ExecutionError),
+    CelResolveError(#[from] ExecutionError),
     #[error("A non ident function name was supplied")]
     NonIdentFunctionName,
     #[error(
@@ -394,8 +394,28 @@ impl ToSql<SqlExpr> for Key {
 
 impl ToSql<SqlExpr> for CelExpr {
     fn into_sql(self, tp: &Transpiler) -> Result<SqlExpr> {
-        if let Ok(value) = CelValue::resolve(&self, &tp.to_context().unwrap()) {
-            return value.into_sql(tp);
+        match CelValue::resolve(&self, &tp.to_context().unwrap()) {
+            Ok(value) => return value.into_sql(tp),
+            // Don't recover from "Unsupported" errors, they will (should)
+            // just error inside the SQL statement as well
+            e @ Err(
+                ExecutionError::UnsupportedBinaryOperator(_, _, _)
+                | ExecutionError::UnsupportedFunctionCallIdentifierType(_)
+                | ExecutionError::UnsupportedIndex(_, _)
+                | ExecutionError::UnsupportedKeyType(_)
+                | ExecutionError::UnsupportedListIndex(_)
+                | ExecutionError::UnsupportedMapIndex(_)
+                | ExecutionError::UnsupportedTargetType { .. }
+                | ExecutionError::UnsupportedUnaryOperator(_, _),
+            ) => {
+                e?;
+            }
+            // Even though this is called "Unsuported" it is different
+            // to the exceptions above (should probably be "Unimplmented")
+            // We can still forward this to the SQL statement because
+            // it _is_ implemented there
+            Err(ExecutionError::UnsupportedFieldsConstruction(_)) => (),
+            _ => (),
         }
 
         Ok(match self {

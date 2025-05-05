@@ -75,21 +75,64 @@ pub struct Transpiler {
 pub enum Variable {
     Sql(SqlExpr),
     Cel(CelExpr),
+    Val(CelValue),
 }
 
 impl Variable {
-    fn to_cel_expr(&self) -> Option<Cow<'_, CelExpr>> {
+    pub fn to_cel_expr(&self) -> Option<Cow<'_, CelExpr>> {
         match self {
             Variable::Cel(expr) => Some(Cow::Borrowed(expr)),
             _ => None,
         }
     }
 
-    fn to_sql(&self) -> Result<Cow<'_, SqlExpr>> {
+    pub fn to_cel_value(&self) -> Option<Cow<'_, CelValue>> {
+        match self {
+            Variable::Val(expr) => Some(Cow::Borrowed(expr)),
+            Variable::Cel(expr) => CelValue::resolve(expr, &Default::default())
+                .ok()
+                .map(Cow::Owned),
+            _ => None,
+        }
+    }
+
+    pub fn to_sql(&self) -> Result<Cow<'_, SqlExpr>> {
         match self {
             Variable::Cel(atom) => atom.clone().into_sql(&Default::default()).map(Cow::Owned),
             Variable::Sql(simple_expr) => Ok(Cow::Borrowed(simple_expr)),
+            Variable::Val(value) => value.clone().into_sql(&Default::default()).map(Cow::Owned),
         }
+    }
+}
+
+impl From<serde_json::Value> for Variable {
+    fn from(value: serde_json::Value) -> Self {
+        Self::Val(serde_to_cel(value))
+    }
+}
+
+fn serde_to_cel(value: serde_json::Value) -> CelValue {
+    match value {
+        serde_json::Value::Null => CelValue::Null,
+        serde_json::Value::Bool(b) => CelValue::Bool(b),
+        serde_json::Value::Number(number) if number.is_f64() => {
+            CelValue::Float(number.as_f64().unwrap())
+        }
+        serde_json::Value::Number(number) if number.is_i64() => {
+            CelValue::Int(number.as_i64().unwrap())
+        }
+        serde_json::Value::Number(number) if number.is_u64() => {
+            CelValue::UInt(number.as_u64().unwrap())
+        }
+        serde_json::Value::String(s) => CelValue::String(Arc::new(s)),
+        serde_json::Value::Object(o) => CelValue::Map(cel_interpreter::objects::Map {
+            map: Arc::new(
+                o.into_iter()
+                    .map(|(k, v)| (k.into(), serde_to_cel(v)))
+                    .collect(),
+            ),
+        }),
+        _ => todo!(),
     }
 }
 
@@ -177,8 +220,8 @@ impl Transpiler {
     fn to_context(&self) -> Result<Context> {
         let mut c = Context::empty();
         for (name, value) in self.variables.iter() {
-            if let Some(value) = value.to_cel_expr() {
-                c.add_variable_from_value(name, CelValue::resolve(value.as_ref(), &c)?)
+            if let Some(value) = value.to_cel_value() {
+                c.add_variable_from_value(name, value.into_owned())
             };
         }
         Ok(c)

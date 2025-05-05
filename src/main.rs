@@ -2,11 +2,10 @@ pub mod hacks;
 pub mod transpiler;
 
 use crate::transpiler::Transpiler;
-use cel_parser::{Atom, Expression};
 use clap::Parser;
-use serde_json::Value;
 use sqcel::PostgresQueryBuilder;
-use std::{io::BufRead, path::PathBuf, sync::Arc};
+use std::{io::BufRead, path::PathBuf};
+use transpiler::Variable;
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -62,24 +61,9 @@ impl Cli {
             .map(|(k, v)| {
                 (
                     k,
-                    match serde_json::from_str::<Value>(&v).unwrap() {
-                        Value::Null => Atom::Null,
-                        Value::Bool(b) => Atom::Bool(b),
-                        Value::Number(number) if number.is_f64() => {
-                            Atom::Float(number.as_f64().unwrap())
-                        }
-                        Value::Number(number) if number.is_i64() => {
-                            Atom::Int(number.as_i64().unwrap())
-                        }
-                        Value::Number(number) if number.is_u64() => {
-                            Atom::UInt(number.as_u64().unwrap())
-                        }
-                        Value::String(s) => Atom::String(Arc::new(s)),
-                        _ => todo!(),
-                    },
+                    Variable::from(serde_json::from_str::<serde_json::Value>(&v).unwrap()),
                 )
-            })
-            .map(|(k, v)| (k, Expression::Atom(v)));
+            });
 
         let columns = columns
             .into_iter()

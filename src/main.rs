@@ -1,11 +1,20 @@
+pub mod functions;
 pub mod hacks;
+pub mod intermediate;
+pub mod magic;
 pub mod transpiler;
+pub mod variables;
 
 use crate::transpiler::Transpiler;
 use clap::Parser;
-use sqcel::PostgresQueryBuilder;
+use sea_query::{Asterisk, ColumnRef, SimpleExpr as SqlExpression, Value};
+use sqcel::{PostgresQueryBuilder, Query};
 use std::{io::BufRead, path::PathBuf};
-use transpiler::Variable;
+use transpiler::alias;
+use variables::Variable;
+
+pub use transpiler::ParseError as Error;
+pub use transpiler::Result;
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -37,6 +46,9 @@ struct Cli {
 
     #[clap(long)]
     trigger_mode: bool,
+
+    #[clap(long)]
+    no_reduce: bool,
 }
 
 impl Cli {
@@ -49,6 +61,7 @@ impl Cli {
             types,
             accept_unknown_types,
             trigger_mode,
+            no_reduce,
         } = self;
 
         let variables = variables
@@ -118,6 +131,7 @@ impl Cli {
             types,
             accept_unknown_types,
             trigger_mode,
+            reduce: !no_reduce,
             ..Default::default()
         }
         .to_builder()

@@ -13,7 +13,11 @@ clap = { version = "4.5.35", optional = true, features = ["derive"] }
 derive_builder = "0.20.2"
 protobuf = "3.7.2"
 protobuf-parse = "3.7.2"
-sea-query = { version = "0.32.3", features = ["postgres-types", "with-json"] }
+sea-query = { version = "0.32.3", features = [
+    "postgres-array",
+    "postgres-types",
+    "with-json",
+] }
 serde = { version = "1.0.219", optional = true }
 serde_json = { version = "1.0.140", optional = true }
 thiserror = "2.0.12"
@@ -23,6 +27,7 @@ default = ["serde_json", "cli"]
 serde_json = ["dep:serde_json", "dep:serde"]
 cli = ["dep:clap"]
 fuzzing = []
+thread-safe = ["sea-query/thread-safe"]
 
 [dev-dependencies]
 async-once-cell = "0.5.4"

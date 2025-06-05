@@ -132,7 +132,7 @@ fn get_dynamic_function(
     Ok(Rc::new(
         tp.functions
             .get(&Signature {
-                name,
+                name: name.to_string(),
                 rec: rec.is_some(),
                 args: args.len(),
             })

@@ -3,7 +3,7 @@ use crate::{
         WrongFunctionArgs,
         dyn_fn::{CelFunction, DynamicFunction, Signature},
     },
-    intermediate::{Rc, ToIntermediate, ToSql},
+    intermediate::{Expression, Rc, ToIntermediate, ToSql},
     types::{ConversionError, Type},
     variables::Variable,
 };
@@ -67,7 +67,7 @@ pub struct Transpiler {
     /// List of known message types
     pub(crate) types: HashMap<String, protobuf::descriptor::DescriptorProto>,
 
-    pub(crate) functions: HashMap<Signature<'static>, (Rc<dyn DynamicFunction>, Option<Type>)>,
+    pub(crate) functions: HashMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
 
     /// Whether to accept unknown types
     ///
@@ -226,22 +226,23 @@ impl TranspilerBuilder {
 
     pub fn add_dyn_func(
         &mut self,
-        name: &'static str,
+        name: impl ToString,
         method: bool,
         args: impl IntoIterator<Item = impl ToString>,
-        code: impl ToString,
+        code: impl Into<Expression>,
         rt: Option<Type>,
     ) -> Result<&mut Self> {
         let f = CelFunction {
-            code: cel_parser::parse(&code.to_string())?.to_sqcel(&self.clone()._build()?)?,
-            name,
+            code: code.into(),
+            name: name.to_string(),
             method,
             args: args.into_iter().map(|x| x.to_string()).collect(),
+            rt: rt.clone(),
         };
 
         self.functions.get_or_insert_default().insert(
             Signature {
-                name,
+                name: name.to_string(),
                 rec: method,
                 args: f.args.len(),
             },

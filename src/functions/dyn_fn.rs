@@ -1,15 +1,16 @@
 use super::Function;
 use crate::{
     Result, Transpiler,
-    intermediate::{Expression, Rc, ToSql},
+    intermediate::{Expression, Rc, ToIntermediate, ToSql},
+    transpiler::ParseError,
     types::{Type, TypedExpression},
     variables::Variable,
 };
 use std::fmt::Debug;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct Signature<'a> {
-    pub name: &'a str,
+pub struct Signature {
+    pub name: String,
     pub rec: bool,
     pub args: usize,
 }
@@ -43,15 +44,16 @@ impl Function for DynFunc {
 }
 
 #[derive(Debug)]
-pub struct CelFunction<'a> {
+pub struct CelFunction {
     pub(crate) code: Expression,
     #[allow(dead_code)]
-    pub(crate) name: &'a str,
+    pub(crate) name: String,
     pub(crate) method: bool,
     pub(crate) args: Vec<String>,
+    pub(crate) rt: Option<Type>,
 }
 
-impl DynamicFunction for CelFunction<'_> {
+impl DynamicFunction for CelFunction {
     fn insert(
         &self,
         tp: &Transpiler,
@@ -60,7 +62,7 @@ impl DynamicFunction for CelFunction<'_> {
     ) -> Result<TypedExpression> {
         let mut builder = tp.to_builder();
         if self.method {
-            builder.var("this", rec.unwrap().as_variable().unwrap().clone());
+            builder.var("self", rec.unwrap().as_variable().unwrap().clone());
         }
         for (key, val) in self.args.iter().zip(args) {
             match val.as_variable() {
@@ -69,5 +71,87 @@ impl DynamicFunction for CelFunction<'_> {
             };
         }
         self.code.to_sql(&builder.build())
+    }
+}
+
+impl CelFunction {
+    pub fn parse(tp: &Transpiler, code: &str) -> Result<Self> {
+        let (name, rest) = code
+            .split_once("(")
+            .ok_or(ParseError::Todo("No arg-bracket"))?;
+
+        let (args, rest) = rest
+            .split_once(") ->")
+            .ok_or(ParseError::Todo("No arrow"))?;
+
+        let args = args.trim();
+        let (method, args) = if !args.is_empty() {
+            let args = args
+                .split(",")
+                .map(|s| s.trim().to_owned())
+                .collect::<Vec<_>>();
+            match args.as_slice() {
+                [first, args @ ..] if first == "self" => (true, args.into()),
+                _ => (false, args),
+            }
+        } else {
+            (false, Vec::new())
+        };
+
+        let (ty, code) = rest.split_once(":").ok_or(ParseError::Todo("No colon"))?;
+
+        Ok(Self {
+            code: cel_parser::parse(code)?.to_sqcel(tp)?,
+            name: name.to_string(),
+            method,
+            args,
+            rt: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use sea_query::PostgresQueryBuilder;
+
+    use crate::{Transpiler, functions::dyn_fn::CelFunction};
+
+    #[test]
+    fn parse_minimal() {
+        CelFunction::parse(&Default::default(), "foo() -> null: null").unwrap();
+    }
+
+    #[test]
+    fn use_identitiy() {
+        let f = CelFunction::parse(&Default::default(), "identity(a) -> any: a").unwrap();
+
+        let result = crate::hacks::get_plaintext_expression(
+            "identity(1)",
+            &Transpiler::new()
+                .add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
+                .unwrap()
+                .build(),
+            PostgresQueryBuilder,
+        )
+        .unwrap()
+        .0;
+
+        assert_eq!(result, "1");
+    }
+
+    #[test]
+    fn use_add() {
+        let f = CelFunction::parse(&Default::default(), "add(a, b) -> int: a + b").unwrap();
+        let result = crate::hacks::get_plaintext_expression(
+            "add(1, 2)",
+            &Transpiler::new()
+                .add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
+                .unwrap()
+                .build(),
+            PostgresQueryBuilder,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(result, "1 + 2");
     }
 }

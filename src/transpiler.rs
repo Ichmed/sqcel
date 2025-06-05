@@ -250,6 +250,11 @@ impl TranspilerBuilder {
         );
         Ok(self)
     }
+
+    pub fn add_cel_func(&mut self, code: impl AsRef<str>) -> Result<&mut Self> {
+        let f = CelFunction::parse(&Default::default(), code.as_ref()).unwrap();
+        self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
+    }
 }
 
 pub(crate) fn alias(s: impl ToString) -> DynIden {

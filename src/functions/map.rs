@@ -70,7 +70,7 @@ impl ToSql for Map {
     }
 }
 
-fn object_keys(data: &Vec<(Expression, Expression)>) -> Result<sea_query::FunctionCall> {
+fn object_keys(data: &[(Expression, Expression)]) -> Result<sea_query::FunctionCall> {
     Ok(Func::cust("unnest").arg(SimpleExpr::Constant(Value::Array(
         ArrayType::String,
         Some(Box::new(

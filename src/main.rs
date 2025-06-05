@@ -6,12 +6,9 @@ pub mod transpiler;
 pub mod types;
 pub mod variables;
 
-use crate::transpiler::{Transpiler, alias};
-use crate::types::{SqlType, Type};
+use crate::transpiler::Transpiler;
 use clap::Parser;
-use sea_query::Asterisk;
-use sqcel::{PostgresQueryBuilder, Query};
-use std::time::SystemTime;
+use sqcel::PostgresQueryBuilder;
 use std::{io::BufRead, path::PathBuf};
 use variables::Variable;
 

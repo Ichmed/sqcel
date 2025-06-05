@@ -2,9 +2,10 @@ use super::{Function, subquery};
 use crate::{
     intermediate::{Expression, Rc, ToSql},
     magic::{here, we},
-    transpiler::{Result, alias},
+    transpiler::{ParseError, Result, alias},
+    types::{Type, TypedExpression},
 };
-use sea_query::{ColumnRef, Query, SimpleExpr};
+use sea_query::{ColumnRef, Query};
 
 /// Returns the last `n` / all previous records that
 /// fullfill some predicate
@@ -25,22 +26,27 @@ impl Last {
 }
 
 impl Function for Last {
-    fn returntype(&self) -> super::FunctionReturn {
-        super::FunctionReturn::SubqueryList
+    fn returntype(&self) -> Type {
+        Type::RecordSet
     }
 }
 
 impl ToSql for Last {
-    fn to_sql(&self, tp: &crate::Transpiler) -> Result<SimpleExpr> {
+    fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
         let mut q = Query::select();
 
-        q.order_by(ColumnRef::Column(alias("time")), sea_query::Order::Desc);
+        let time = tp
+            .columns
+            .get("time")
+            .ok_or(ParseError::Todo("No time column set"))?;
+
+        q.order_by(ColumnRef::Column(alias(time)), sea_query::Order::Desc);
 
         if let Some(predicate) = self.predicate.as_ref() {
-            q.expr(here().to_sql(tp)?);
-            q.and_where(predicate.to_sql(tp)?);
+            q.expr(here().to_sql(tp)?.expr);
+            q.and_where(predicate.to_sql(tp)?.expr);
         } else {
-            q.expr(we().to_sql(tp)?);
+            q.expr(we().to_sql(tp)?.expr);
         }
         if let Some(amount) = self.amount {
             q.limit(amount);

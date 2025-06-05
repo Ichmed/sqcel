@@ -5,6 +5,7 @@ use crate::{
     Transpiler,
     functions::{Function, subquery},
     transpiler::{ParseError, alias},
+    types::{JsonType, SqlType, Type, TypedExpression},
     variables::{Atom, Object, Variable},
 };
 use cel_interpreter::{
@@ -13,8 +14,7 @@ use cel_interpreter::{
 };
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
 use sea_query::{
-    BinOper, CaseStatement, ColumnRef, Query, SelectStatement, SimpleExpr, SubQueryStatement,
-    Value,
+    BinOper, CaseStatement, ColumnRef, IntoIden, Query, SimpleExpr, SubQueryStatement, Value,
     extension::postgres::{PgBinOper, PgExpr},
 };
 use std::{
@@ -27,10 +27,23 @@ pub use to_sql::ToSql;
 #[cfg(not(feature = "thread-safe"))]
 pub type Rc<T> = std::rc::Rc<T>;
 #[cfg(feature = "thread-safe")]
-pub type Rc<T> = std::arc::Arc<T>;
+pub type Rc<T> = std::sync::Arc<T>;
+
+#[derive(Clone, Debug)]
+pub struct Expression {
+    inner: Rc<ExpressionInner>,
+}
+
+impl std::ops::Deref for Expression {
+    type Target = ExpressionInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 #[derive(Clone)]
-pub enum Expression {
+pub enum ExpressionInner {
     Access(AccessChain),
     Index(Box<Expression>, i64),
     Variable(Variable),
@@ -44,16 +57,30 @@ pub enum Expression {
     FunctionCall(Rc<dyn Function + 'static>),
 }
 
-#[derive(Clone, Debug)]
+impl ExpressionInner {
+    pub fn into_anonymous(self) -> Expression {
+        Expression {
+            inner: Rc::new(self),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident(pub(crate) Arc<String>);
 
 impl Ident {
     fn to_sql_string(&self) -> Value {
-        Value::String(Some(Box::new((*self.0).clone())))
+        (*self.0).clone().into()
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl IntoIden for Ident {
+    fn into_iden(self) -> sea_query::DynIden {
+        alias(self.0)
     }
 }
 
@@ -67,17 +94,38 @@ type Error = ParseError;
 
 type Result<T> = std::result::Result<T, Error>;
 
-impl Atom {
-    pub fn to_sql(&self, _: &Transpiler) -> Result<SimpleExpr> {
-        Ok(SimpleExpr::Constant(match self {
-            Atom::Null => Value::Json(None),
-            Atom::Bool(b) => Value::Bool(Some(*b)),
-            Atom::String(s) => Value::String(Some(Box::new(s.to_string()))),
-            Atom::Bytes(b) => Value::Bytes(Some(Box::new(b.as_ref().clone()))),
-            Atom::Int(i) => Value::BigInt(Some(*i)),
-            Atom::UInt(u) => Value::BigUnsigned(Some(*u)),
-            Atom::Float(f) => Value::Double(Some(*f)),
-        }))
+impl ToSql for Atom {
+    fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
+        Ok(match self {
+            Atom::Null => TypedExpression {
+                expr: SimpleExpr::Constant(Value::Json(None)),
+                ty: Type::Null,
+            },
+            Atom::Bool(b) => TypedExpression {
+                ty: Type::Sql(SqlType::Boolean),
+                expr: SimpleExpr::Constant(Value::Bool(Some(*b))),
+            },
+            Atom::String(s) => TypedExpression {
+                ty: Type::Sql(SqlType::String),
+                expr: SimpleExpr::Constant(Value::String(Some(Box::new(s.to_string())))),
+            },
+            Atom::Bytes(b) => TypedExpression {
+                ty: Type::Sql(SqlType::Bytes),
+                expr: SimpleExpr::Constant(Value::Bytes(Some(Box::new(b.as_ref().clone())))),
+            },
+            Atom::Int(i) => TypedExpression {
+                ty: Type::Sql(SqlType::Integer),
+                expr: SimpleExpr::Constant(Value::BigInt(Some(*i))),
+            },
+            Atom::UInt(u) => TypedExpression {
+                ty: Type::Sql(SqlType::UInteger),
+                expr: SimpleExpr::Constant(Value::BigUnsigned(Some(*u))),
+            },
+            Atom::Float(f) => TypedExpression {
+                ty: Type::Sql(SqlType::Float),
+                expr: SimpleExpr::Constant(Value::Double(Some(*f))),
+            },
+        })
     }
 }
 
@@ -100,7 +148,8 @@ impl From<serde_json::Value> for Variable {
                 values
                     .into_iter()
                     .map(Into::into)
-                    .map(Expression::Variable)
+                    .map(ExpressionInner::Variable)
+                    .map(ExpressionInner::into_anonymous)
                     .collect(),
             ),
             serde_json::Value::Object(map) => Variable::Object(Object {
@@ -108,8 +157,9 @@ impl From<serde_json::Value> for Variable {
                     .into_iter()
                     .map(|(k, v)| {
                         (
-                            Expression::Variable(Variable::Atom(Atom::String(k.into()))),
-                            Expression::Variable(v.into()),
+                            ExpressionInner::Variable(Variable::Atom(Atom::String(k.into())))
+                                .into_anonymous(),
+                            ExpressionInner::Variable(v.into()).into_anonymous(),
                         )
                     })
                     .collect(),
@@ -121,7 +171,7 @@ impl From<serde_json::Value> for Variable {
 
 impl ToIntermediate for serde_json::Value {
     fn to_sqcel(&self, _tp: &Transpiler) -> Result<Expression> {
-        Ok(Expression::Variable(self.clone().into()))
+        Ok(ExpressionInner::Variable(self.clone().into()).into_anonymous())
     }
 }
 
@@ -145,8 +195,8 @@ impl TryFrom<Expression> for Key {
     type Error = CantBeAValue;
 
     fn try_from(value: Expression) -> std::result::Result<Self, Self::Error> {
-        match value {
-            Expression::Variable(v) => v.try_into(),
+        match &*value.inner {
+            ExpressionInner::Variable(v) => v.clone().try_into(),
             _ => Err(CantBeAValue),
         }
     }
@@ -169,8 +219,8 @@ impl TryFrom<Variable> for CelValue {
             Variable::List(expresions) => CelValue::List(Arc::new(
                 expresions
                     .into_iter()
-                    .map(|v| match v {
-                        Expression::Variable(x) => x.try_into(),
+                    .map(|v| match &*v.inner {
+                        ExpressionInner::Variable(x) => x.clone().try_into(),
                         _ => Err(CantBeAValue),
                     })
                     .collect::<std::result::Result<_, _>>()?,
@@ -193,8 +243,8 @@ impl TryFrom<Expression> for CelValue {
     type Error = CantBeAValue;
 
     fn try_from(value: Expression) -> std::result::Result<Self, Self::Error> {
-        match value {
-            Expression::Variable(var) => var.try_into(),
+        match &*value.inner {
+            ExpressionInner::Variable(var) => var.clone().try_into(),
             _ => Err(CantBeAValue),
         }
     }
@@ -207,35 +257,53 @@ pub struct AccessChain {
 }
 
 impl ToSql for AccessChain {
-    fn to_sql(&self, tp: &Transpiler) -> Result<SimpleExpr> {
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         let (head, rest) = match (&self.head, self.idents.as_slice()) {
             (None, [schema, table, column, rest @ ..])
                 if tp.schemas.contains_key(schema.as_str()) =>
             {
                 (
-                    tp.schemas.get(schema.as_str()).map(|schema_name| {
-                        SimpleExpr::Column(ColumnRef::SchemaTableColumn(
-                            alias(schema_name),
-                            alias(table.as_str()),
-                            alias(column.as_str()),
-                        ))
-                    }),
+                    tp.schemas
+                        .get(schema.as_str())
+                        .map(|schema_name| TypedExpression {
+                            ty: Type::Unknown,
+                            expr: SimpleExpr::Column(ColumnRef::SchemaTableColumn(
+                                alias(schema_name),
+                                alias(table.as_str()),
+                                alias(column.as_str()),
+                            )),
+                        }),
                     rest,
                 )
             }
             (None, [table, column, rest @ ..]) if tp.tables.contains_key(table.as_str()) => (
-                tp.tables.get(table.as_str()).map(|table_name| {
-                    SimpleExpr::Column(ColumnRef::TableColumn(
-                        alias(table_name),
-                        alias(column.as_str()),
-                    ))
-                }),
+                tp.tables
+                    .get(table.as_str())
+                    .map(|table_name| TypedExpression {
+                        ty: Type::Unknown,
+                        expr: SimpleExpr::Column(ColumnRef::TableColumn(
+                            alias(table_name),
+                            alias(column.as_str()),
+                        )),
+                    }),
                 rest,
             ),
             (None, [column, rest @ ..]) if tp.columns.contains_key(column.as_str()) => (
                 tp.columns
                     .get(column.as_str())
-                    .map(|column_name| SimpleExpr::Column(ColumnRef::Column(alias(column_name)))),
+                    .map(|column_name| TypedExpression {
+                        ty: Type::RecordSet,
+                        expr: SimpleExpr::Column(ColumnRef::Column(alias(column_name))),
+                    }),
+                rest,
+            ),
+            (None, [table, rest @ ..]) if tp.tables.contains_key(table.as_str()) => (
+                tp.tables
+                    .get(table.as_str())
+                    .map(|table_name| TypedExpression {
+                        ty: Type::RecordSet,
+                        expr: SimpleExpr::Column(ColumnRef::Column(alias(table_name))),
+                    }),
                 rest,
             ),
             (None, [var, rest @ ..]) if tp.variables.contains_key(var.as_str()) => (
@@ -246,9 +314,12 @@ impl ToSql for AccessChain {
                 rest,
             ),
             (Some(head), rest) => (Some(head.to_sql(tp)?), rest),
-            (None, _) => {
+            (None, rest) => {
                 return Err(Error::UnknownField(
-                    "?".to_owned(),
+                    rest.iter()
+                        .map(|x| x.as_str().to_owned())
+                        .collect::<Vec<_>>()
+                        .join(","),
                     self.to_path()
                         .map(Cow::into_owned)
                         .unwrap_or("?".to_owned()),
@@ -262,8 +333,10 @@ impl ToSql for AccessChain {
         };
 
         Self::chain_to_json_access(
-            head.into_iter()
-                .chain(rest.iter().map(|s| SimpleExpr::Constant(s.to_sql_string()))),
+            head.into_iter().chain(rest.iter().map(|s| TypedExpression {
+                ty: Type::Unknown,
+                expr: SimpleExpr::Constant(s.to_sql_string()),
+            })),
             tail,
         )
     }
@@ -288,17 +361,26 @@ impl AccessChain {
     }
 
     fn chain_to_json_access(
-        chain: impl IntoIterator<Item = SimpleExpr>,
+        chain: impl IntoIterator<Item = TypedExpression>,
         tail: Option<SimpleExpr>,
-    ) -> Result<SimpleExpr> {
+    ) -> Result<TypedExpression> {
         let outer = chain
             .into_iter()
-            .reduce(|a, b| a.get_json_field(b))
+            .reduce(|a, b| TypedExpression {
+                ty: JsonType::Any.into(),
+                expr: a.expr.get_json_field(b.expr),
+            })
             .ok_or(Error::Todo("tried to create empty access chain"))?;
 
         Ok(match tail {
-            Some(tail) => outer.cast_json_field(tail),
-            None => outer,
+            Some(tail) => TypedExpression {
+                ty: SqlType::Inferred.into(),
+                expr: outer.expr.cast_json_field(tail),
+            },
+            None => TypedExpression {
+                ty: Type::RecordSet,
+                expr: outer.expr,
+            },
         })
     }
 
@@ -311,78 +393,96 @@ impl AccessChain {
 }
 
 impl ToSql for Expression {
-    fn to_sql(&self, tp: &Transpiler) -> Result<SimpleExpr> {
-        Ok(match self {
-            Expression::Access(chain) => chain.to_sql(tp)?,
-            Expression::Variable(variable) => variable.to_sql(tp)?,
-            Expression::Arithmetic(a, op, b) => SimpleExpr::Binary(
-                Box::new(a.to_sql(tp)?),
-                match op {
-                    ArithmeticOp::Add => BinOper::Add,
-                    ArithmeticOp::Subtract => BinOper::Sub,
-                    ArithmeticOp::Divide => BinOper::Div,
-                    ArithmeticOp::Multiply => BinOper::Mul,
-                    ArithmeticOp::Modulus => BinOper::Mod,
-                },
-                Box::new(b.to_sql(tp)?),
-            ),
-            Expression::Relation(a, op, b) => SimpleExpr::Binary(
-                Box::new(match op {
-                    RelationOp::Equals | RelationOp::NotEquals => a.to_json(tp)?.into(),
-                    _ => a.to_sql(tp)?,
-                }),
-                match op {
-                    RelationOp::LessThan => BinOper::SmallerThan,
-                    RelationOp::LessThanEq => BinOper::SmallerThanOrEqual,
-                    RelationOp::GreaterThan => BinOper::GreaterThan,
-                    RelationOp::GreaterThanEq => BinOper::GreaterThanOrEqual,
-                    RelationOp::Equals => BinOper::Equal,
-                    RelationOp::NotEquals => BinOper::NotEqual,
-                    RelationOp::In => {
-                        return Err(ParseError::Todo("IN operator for lists, subqueries etc"));
-                    }
-                },
-                Box::new(match op {
-                    RelationOp::Equals | RelationOp::NotEquals => b.to_json(tp)?.into(),
-                    _ => b.to_sql(tp)?,
-                }),
-            ),
-            Expression::Ternary(r#if, then, r#else) => SimpleExpr::Case(Box::new(
-                CaseStatement::new()
-                    .case(r#if.to_sql(tp)?, then.to_sql(tp)?)
-                    .finally(r#else.to_sql(tp)?),
-            )),
-            Expression::Or(a, b) => a.to_sql(tp)?.or(b.to_sql(tp)?),
-            Expression::And(a, b) => a.to_sql(tp)?.and(b.to_sql(tp)?),
-            Expression::Unary(unary_op, expresion) => match unary_op {
-                UnaryOp::Not => expresion.to_sql(tp)?.not(),
-                UnaryOp::DoubleNot => expresion.to_sql(tp)?,
-                UnaryOp::Minus => SimpleExpr::Constant(match expresion.as_ref() {
-                    Expression::Variable(Variable::Atom(a)) => match a {
-                        Atom::Int(i) => Value::BigInt(Some(-i)),
-                        Atom::UInt(u) => Value::BigInt(Some(
-                            -((*u).try_into().or(Err(Error::Todo("UInt too large")))?),
-                        )),
-                        Atom::Float(f) => Value::Double(Some(-f)),
-                        _ => return Err(Error::Todo("Can't be negative")),
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
+        Ok(match &*self.inner {
+            ExpressionInner::Access(chain) => chain.to_sql(tp)?,
+            ExpressionInner::Variable(variable) => variable.to_sql(tp)?,
+            ExpressionInner::Arithmetic(a, op, b) => TypedExpression {
+                ty: Type::Sql(SqlType::Number),
+                expr: SimpleExpr::Binary(
+                    Box::new(a.to_sql(tp)?.expr),
+                    match op {
+                        ArithmeticOp::Add => BinOper::Add,
+                        ArithmeticOp::Subtract => BinOper::Sub,
+                        ArithmeticOp::Divide => BinOper::Div,
+                        ArithmeticOp::Multiply => BinOper::Mul,
+                        ArithmeticOp::Modulus => BinOper::Mod,
                     },
-                    _ => return Err(Error::Todo("Can't be negative")),
-                }),
-                UnaryOp::DoubleMinus => expresion.to_sql(tp)?,
+                    Box::new(b.to_sql(tp)?.expr),
+                ),
             },
-            Expression::FunctionCall(x) => x.to_sql(tp)?,
-            Expression::Index(expression, index) => Self::index(tp, expression.as_ref(), *index)?,
+            ExpressionInner::Relation(a, op, b) => TypedExpression {
+                ty: Type::Sql(SqlType::Boolean),
+                expr: SimpleExpr::Binary(
+                    Box::new(a.to_sql(tp)?.expr),
+                    match op {
+                        RelationOp::LessThan => BinOper::SmallerThan,
+                        RelationOp::LessThanEq => BinOper::SmallerThanOrEqual,
+                        RelationOp::GreaterThan => BinOper::GreaterThan,
+                        RelationOp::GreaterThanEq => BinOper::GreaterThanOrEqual,
+                        RelationOp::Equals => BinOper::Equal,
+                        RelationOp::NotEquals => BinOper::NotEqual,
+                        RelationOp::In => {
+                            return Err(ParseError::Todo("IN operator for lists, subqueries etc"));
+                        }
+                    },
+                    Box::new(b.to_sql(tp)?.expr),
+                ),
+            },
+            ExpressionInner::Ternary(r#if, then, r#else) => TypedExpression {
+                ty: Type::Sql(SqlType::Boolean),
+                expr: SimpleExpr::Case(Box::new(
+                    CaseStatement::new()
+                        .case(r#if.to_sql(tp)?.expr, then.to_sql(tp)?.expr)
+                        .finally(r#else.to_sql(tp)?.expr),
+                )),
+            },
+            ExpressionInner::Or(a, b) => TypedExpression {
+                ty: Type::Sql(SqlType::Boolean),
+                expr: a.to_sql(tp)?.expr.or(b.to_sql(tp)?.expr),
+            },
+            ExpressionInner::And(a, b) => TypedExpression {
+                ty: Type::Sql(SqlType::Boolean),
+                expr: a.to_sql(tp)?.expr.and(b.to_sql(tp)?.expr),
+            },
+            ExpressionInner::Unary(unary_op, expresion) => TypedExpression {
+                ty: Type::Unknown,
+                expr: match unary_op {
+                    UnaryOp::Not => expresion.to_sql(tp)?.expr.not(),
+                    UnaryOp::DoubleNot => expresion.to_sql(tp)?.expr,
+                    UnaryOp::Minus => SimpleExpr::Constant(match &*expresion.as_ref().inner {
+                        ExpressionInner::Variable(Variable::Atom(a)) => match a {
+                            Atom::Int(i) => Value::BigInt(Some(-i)),
+                            Atom::UInt(u) => Value::BigInt(Some(
+                                -((*u).try_into().or(Err(Error::Todo("UInt too large")))?),
+                            )),
+                            Atom::Float(f) => Value::Double(Some(-f)),
+                            _ => return Err(Error::Todo("Can't be negative")),
+                        },
+                        _ => return Err(Error::Todo("Can't be negative")),
+                    }),
+                    UnaryOp::DoubleMinus => expresion.to_sql(tp)?.expr,
+                },
+            },
+            ExpressionInner::FunctionCall(x) => x.to_sql(tp)?,
+            ExpressionInner::Index(expression, index) => {
+                Self::index(tp, expression.as_ref(), *index)?
+            }
         })
     }
 }
 
 impl Expression {
-    fn index(tp: &Transpiler, ex: &Expression, index: i64) -> Result<SimpleExpr> {
-        Ok(match ex {
-            Expression::Variable(variable) => match variable {
-                Variable::List(_) => ex
-                    .to_sql(tp)?
-                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
+    fn index(tp: &Transpiler, ex: &Expression, index: i64) -> Result<TypedExpression> {
+        Ok(match &*ex.inner {
+            ExpressionInner::Variable(variable) => match variable {
+                Variable::List(_) => TypedExpression {
+                    ty: Type::Unknown,
+                    expr: ex
+                        .to_sql(tp)?
+                        .expr
+                        .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
+                },
                 Variable::SqlSubQuery(select_statement) => subquery(
                     select_statement
                         .clone()
@@ -394,69 +494,97 @@ impl Expression {
                 Variable::SqlSubQueryAtom(select_statement) if index == 0 => {
                     subquery(*select_statement.clone())
                 }
-                Variable::SqlAny(simple_expr) => SimpleExpr::SubQuery(
-                    None,
-                    Box::new(SubQueryStatement::SelectStatement(
-                        Query::select()
-                            .expr(*simple_expr.clone())
-                            .offset(index as u64)
-                            .limit(1)
-                            .take(),
-                    )),
-                ),
+                Variable::SqlAny(simple_expr) => TypedExpression {
+                    ty: Type::Unknown,
+                    expr: SimpleExpr::SubQuery(
+                        None,
+                        Box::new(SubQueryStatement::SelectStatement(
+                            Query::select()
+                                .expr(*simple_expr.clone())
+                                .offset(index as u64)
+                                .limit(1)
+                                .take(),
+                        )),
+                    ),
+                },
                 _ => return Err(Error::Todo("Can not be accessed")),
             },
-            Expression::Index(inner, index) => {
+            ExpressionInner::Index(inner, index) => {
                 let inner = Self::index(tp, inner, *index)?;
-                match inner {
-                    SimpleExpr::Binary(a, op, b) if op == PgBinOper::CastJsonField.into() => {
-                        a.get_json_field(*b)
+                TypedExpression {
+                    ty: Type::Unknown,
+                    expr: match inner.expr {
+                        SimpleExpr::Binary(a, op, b) if op == PgBinOper::CastJsonField.into() => {
+                            a.get_json_field(*b)
+                        }
+                        x => x,
                     }
-                    _ => inner,
+                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(*index)))),
                 }
-                .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(*index))))
             }
             _ => return Err(Error::Todo("Can't index this")),
         })
     }
 
     pub fn is_object(&self) -> bool {
-        match self {
-            Self::Variable(var) => var.is_object(),
+        match &*self.inner {
+            ExpressionInner::Variable(var) => var.is_object(),
             _ => false,
         }
     }
 
     pub(crate) fn as_postive_integer(&self) -> Result<u64> {
-        match self {
-            Expression::Variable(variable) => variable.as_postive_integer(),
+        match &*self.inner {
+            ExpressionInner::Variable(variable) => variable.as_postive_integer(),
             _ => Err(ParseError::Todo("Must be an integer")),
         }
     }
 
     pub fn as_single_ident(&self) -> Result<&Ident> {
-        match self {
-            Self::Access(a) => a.as_single_ident(),
+        match &*self.inner {
+            ExpressionInner::Access(a) => a.as_single_ident(),
             _ => Err(Error::Todo("Not an ident")),
         }
     }
 
     pub fn as_str(&self) -> Result<&str> {
-        match self {
-            Self::Variable(Variable::Atom(Atom::String(s))) => Ok(s),
+        match &*self.inner {
+            ExpressionInner::Variable(Variable::Atom(Atom::String(s))) => Ok(s),
             _ => Err(Error::Todo("Not a str")),
         }
     }
 
-    pub(crate) fn to_record_set(&self, tp: &Transpiler, alias: &str) -> Result<SelectStatement> {
-        match self {
-            Self::Variable(var) => var.to_record_set(tp, alias),
-            _ => Err(Error::Todo("Can't be a record set")),
+    // pub(crate) fn to_record_set(&self, tp: &Transpiler, alias: &str) -> Result<SelectStatement> {
+    //     Ok(match dbg!(&*self.inner) {
+    //         ExpressionInner::Variable(var) => var.to_record_set(tp, alias)?,
+    //         ExpressionInner::Access(access) => {
+    //             match tp.variables.get(access.as_single_ident()?.as_str()) {
+    //                 Some(var) => var.to_record_set(tp, alias)?,
+    //                 None => Err(Error::Todo("Can't be a record set"))?,
+    //             }
+    //         }
+    //         ExpressionInner::FunctionCall(f) => match f.returntype() {
+    //             FunctionReturn::SubqueryList => Query::select().expr(f.to_sql(tp)?.expr).take(),
+    //             FunctionReturn::Array => todo!(),
+    //             FunctionReturn::Atom => todo!(),
+    //             FunctionReturn::Json => todo!(),
+    //             FunctionReturn::SubqueryAtom => todo!(),
+    //             FunctionReturn::Unknown => todo!(),
+    //             FunctionReturn::Object => todo!(),
+    //         },
+    //         _ => Err(Error::Todo("Can't be a record set"))?,
+    //     })
+    // }
+
+    pub fn as_variable(&self) -> Option<&Variable> {
+        match &*self.inner {
+            ExpressionInner::Variable(variable) => Some(variable),
+            _ => None,
         }
     }
 }
 
-impl Debug for Expression {
+impl Debug for ExpressionInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Access(arg0) => f.debug_tuple("Access").field(arg0).finish(),
@@ -503,6 +631,7 @@ mod test {
         Transpiler,
         intermediate::ToSql,
         transpiler::{TranspilerBuilder, alias},
+        types::{Type, TypedExpression},
     };
     use sea_query::{PostgresQueryBuilder, Query, SimpleExpr};
     use serde_json::json;
@@ -521,7 +650,10 @@ mod test {
 
         assert_eq!(
             chain,
-            SimpleExpr::Column(sea_query::ColumnRef::Column(alias("a")))
+            TypedExpression {
+                ty: Type::RecordSet,
+                expr: SimpleExpr::Column(sea_query::ColumnRef::Column(alias("a")))
+            }
         )
     }
 

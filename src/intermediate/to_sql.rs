@@ -1,20 +1,42 @@
-use sea_query::{Func, SimpleExpr};
+use sea_query::{Query, SelectStatement, SimpleExpr, SubQueryStatement};
 
-use crate::{Result, Transpiler, transpiler::alias};
+use crate::{
+    Result, Transpiler,
+    transpiler::alias,
+    types::{Type, TypeConversion, TypedExpression},
+};
 
 pub trait ToSql {
-    fn to_sql(&self, tp: &Transpiler) -> Result<SimpleExpr>;
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression>;
 
-    fn to_json(&self, tp: &Transpiler) -> Result<JsonExpression> {
-        Ok(JsonExpression(SimpleExpr::FunctionCall(
-            Func::cust(alias("to_jsonb")).arg(self.to_sql(tp)?),
-        )))
+    fn cast(&self, tp: &Transpiler, ty: Type) -> Result<SimpleExpr> {
+        Ok(ty.try_convert(self.to_sql(tp)?)?.expr)
+    }
+
+    fn assume(&self, tp: &Transpiler, ty: Type) -> Result<TypedExpression> {
+        Ok(TypedExpression {
+            expr: self.to_sql(tp)?.expr,
+            ty,
+        })
+    }
+
+    fn to_record_set(&self, tp: &Transpiler, a: &str) -> Result<SelectStatement> {
+        Ok(match self.cast(tp, Type::RecordSet)? {
+            SimpleExpr::SubQuery(_, x) => match *x {
+                SubQueryStatement::SelectStatement(select_statement) => select_statement,
+                _ => todo!(),
+            },
+            x => Query::select().expr_as(x, alias(a)).take(),
+        })
     }
 }
 
 impl ToSql for SimpleExpr {
-    fn to_sql(&self, _: &Transpiler) -> Result<SimpleExpr> {
-        Ok(self.clone())
+    fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
+        Ok(TypedExpression {
+            expr: self.clone(),
+            ty: Type::Unknown,
+        })
     }
 }
 
@@ -53,4 +75,6 @@ macro_rules! wrappers {
 wrappers!(
     /// the return type is `jsonb`
     JsonExpression,
+    /// the return type is `numeric`
+    NumericExpression,
 );

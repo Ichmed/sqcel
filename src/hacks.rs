@@ -1,5 +1,5 @@
-use crate::{transpiler::Result, Transpiler};
-use sea_query::{Query, QueryBuilder};
+use crate::{Transpiler, transpiler::Result};
+use sea_query::{PostgresQueryBuilder, Query, QueryBuilder};
 
 /// Get _just_ the expression and the bind params without a surrounding SELECT statement
 pub fn get_plaintext_expression(
@@ -11,4 +11,8 @@ pub fn get_plaintext_expression(
     let sql = sql.strip_prefix("SELECT ").unwrap().to_owned();
     let params = params.into_iter().map(|v| v.to_string()).collect();
     Ok((sql, params))
+}
+
+pub fn postgres(code: &str) -> Result<String> {
+    Ok(get_plaintext_expression(code, &Transpiler::default(), PostgresQueryBuilder)?.0)
 }

@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.97"
-cel-parser = { version = "0.8.0", default-features = false }
-cel-interpreter = { version = "0.9.0", features = [
+anyhow = "1.0.98"
+cel-parser = { version = "0.8.1", default-features = false }
+cel-interpreter = { version = "0.9.1", features = [
     "json",
 ], default-features = false }
-clap = { version = "4.5.35", optional = true, features = ["derive"] }
+clap = { version = "4.5.39", optional = true, features = ["derive"] }
 derive_builder = "0.20.2"
 protobuf = "3.7.2"
 protobuf-parse = "3.7.2"
-sea-query = { version = "0.32.3", features = [
+sea-query = { version = "0.32.6", features = [
     "postgres-array",
     "postgres-types",
     "with-json",
@@ -21,11 +21,13 @@ sea-query = { version = "0.32.3", features = [
 serde = { version = "1.0.219", optional = true }
 serde_json = { version = "1.0.140", optional = true }
 thiserror = "2.0.12"
+chrono = "0.4.41"
+miette = "7.6.0"
 
 [features]
-default = ["serde_json", "cli"]
+default = ["serde_json", "cli", "thread-safe"]
 serde_json = ["dep:serde_json", "dep:serde"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "miette/fancy"]
 fuzzing = []
 thread-safe = ["sea-query/thread-safe"]
 
@@ -33,6 +35,8 @@ thread-safe = ["sea-query/thread-safe"]
 async-once-cell = "0.5.4"
 futures = "0.3.31"
 indoc = "2.0.6"
-serde_postgres = "0.2.0"
-tokio = { version = "0.2", features = ["macros"] }
-tokio-postgres = "0.5.5"
+tokio = { version = "1.45", features = ["macros", "rt-multi-thread"] }
+tokio-postgres = { version = "0.7.13", features = [
+    "array-impls",
+    "with-serde_json-1",
+] }

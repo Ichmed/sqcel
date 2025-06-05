@@ -1,12 +1,18 @@
 use crate::{
-    intermediate::{ToIntermediate, ToSql},
+    functions::{
+        WrongFunctionArgs,
+        dyn_fn::{CelFunction, DynamicFunction, Signature},
+    },
+    intermediate::{Rc, ToIntermediate, ToSql},
+    types::{ConversionError, Type},
     variables::Variable,
 };
 use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
 use derive_builder::Builder;
+use miette::{Diagnostic, LabeledSpan};
 use sea_query::{Alias, DynIden, SeaRc, SimpleExpr as SqlExpr};
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::once};
 use thiserror::Error;
 
 /// A simple example
@@ -30,7 +36,7 @@ use thiserror::Error;
 /// let my_expr = tp.transpile(code).unwrap();
 /// assert_eq!(
 ///     Query::select().expr(my_expr).to_string(PostgresQueryBuilder),
-///     r#"SELECT CAST((CAST(jsonb_build_object('val', 2) AS jsonb) ->> 'foo') AS integer) + 1 + "some_col""#
+///     "SELECT CAST((jsonb_build_object('val', 2) ->> 'foo') AS integer) + 1 + \"some_col\""
 /// )
 ///```
 #[derive(Debug, Default, Builder)]
@@ -61,6 +67,8 @@ pub struct Transpiler {
     /// List of known message types
     pub(crate) types: HashMap<String, protobuf::descriptor::DescriptorProto>,
 
+    pub(crate) functions: HashMap<Signature<'static>, (Rc<dyn DynamicFunction>, Option<Type>)>,
+
     /// Whether to accept unknown types
     ///
     /// Known types will still be valdiated
@@ -87,7 +95,7 @@ impl Transpiler {
     }
 
     pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
-        dbg!(expr.to_sqcel(self))?.to_sql(self)
+        expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
     }
 
     pub fn to_builder(&self) -> TranspilerBuilder {
@@ -101,6 +109,7 @@ impl Transpiler {
             accept_unknown_types,
             trigger_mode,
             reduce,
+            functions,
         } = self;
         TranspilerBuilder {
             variables: Some(variables.clone()),
@@ -112,6 +121,7 @@ impl Transpiler {
             accept_unknown_types: Some(*accept_unknown_types),
             trigger_mode: Some(*trigger_mode),
             reduce: Some(*reduce),
+            functions: Some(functions.clone()),
         }
     }
 
@@ -133,7 +143,7 @@ impl TranspilerBuilder {
 
     pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
         let tp = self._build()?;
-        expr.to_sqcel(&tp)?.to_sql(&tp)
+        expr.to_sqcel(&tp)?.to_sql(&tp).map(|x| x.expr)
     }
 
     pub fn var(&mut self, key: impl ToString, val: impl Into<Variable>) -> &mut Self {
@@ -213,18 +223,44 @@ impl TranspilerBuilder {
             .insert(alias.to_string(), record.to_string());
         self
     }
+
+    pub fn add_dyn_func(
+        &mut self,
+        name: &'static str,
+        method: bool,
+        args: impl IntoIterator<Item = impl ToString>,
+        code: impl ToString,
+        rt: Option<Type>,
+    ) -> Result<&mut Self> {
+        let f = CelFunction {
+            code: cel_parser::parse(&code.to_string())?.to_sqcel(&self.clone()._build()?)?,
+            name,
+            method,
+            args: args.into_iter().map(|x| x.to_string()).collect(),
+        };
+
+        self.functions.get_or_insert_default().insert(
+            Signature {
+                name,
+                rec: method,
+                args: f.args.len(),
+            },
+            (Rc::new(f), rt),
+        );
+        Ok(self)
+    }
 }
 
 pub(crate) fn alias(s: impl ToString) -> DynIden {
     SeaRc::new(Alias::new(s.to_string()))
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Diagnostic)]
 pub enum ParseError {
     #[error("A non ident column, field or schema name was supplied")]
     NonIdentColumnFieldSchema,
     #[error(transparent)]
-    CelError(#[from] cel_parser::error::ParseError),
+    CelError(CelParseError),
     #[error(transparent)]
     CelResolveError(#[from] ExecutionError),
     #[error("A non ident function name was supplied")]
@@ -237,7 +273,7 @@ pub enum ParseError {
     BugBakedFunction,
     #[error("Unknown message type `{}`", .0)]
     UnknownType(String),
-    #[error("Unknown field `{}` on type `{}`", .1, .0)]
+    #[error("Unknown field `{}` on type `{}`", .0, .1)]
     UnknownField(String, String),
     #[error("Message of type `{}` is missing the fields: {:?}", .0, .1)]
     MissingFields(String, Vec<String>),
@@ -245,8 +281,32 @@ pub enum ParseError {
     #[error(transparent)]
     Builder(#[from] TranspilerBuilderError),
 
-    #[error("TODO")]
+    #[error(transparent)]
+    WrongFunctionArgs(#[from] WrongFunctionArgs),
+    #[error(transparent)]
+    ConversionError(#[from] ConversionError),
+
+    #[error("TODO: {}", .0)]
     Todo(&'static str),
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct CelParseError(cel_parser::ParseError);
+
+impl Diagnostic for CelParseError {
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = miette::LabeledSpan> + '_>> {
+        let start = self.0.span.start.clone()?.absolute;
+        let end = self.0.span.end.clone()?.absolute;
+
+        Some(Box::new(once(LabeledSpan::underline(start..end))))
+    }
+}
+
+impl From<cel_parser::ParseError> for ParseError {
+    fn from(value: cel_parser::ParseError) -> Self {
+        ParseError::CelError(CelParseError(value))
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ParseError>;
@@ -287,11 +347,10 @@ mod test {
     }
 
     fn helper(code: &str, tp: &Transpiler) -> String {
-        let q = Query::select()
+        Query::select()
             .expr(tp.transpile(code).unwrap())
             .build(PostgresQueryBuilder)
-            .0;
-        q
+            .0
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::intermediate::{AccessChain, Expression, Ident};
+use crate::intermediate::{AccessChain, Expression, ExpressionInner, Ident};
 use std::sync::{Arc, LazyLock};
 
 macro_rules! ident {
@@ -7,10 +7,10 @@ macro_rules! ident {
         pub fn $name() -> Expression {
             static NAME: LazyLock<Arc<String>> =
                 LazyLock::new(|| Arc::new(stringify!($name).to_owned()));
-            Expression::Access(AccessChain {
+            ExpressionInner::Access(AccessChain {
                 head: None,
                 idents: vec![Ident(NAME.clone())],
-            })
+            }).into_anonymous()
         }
     };
 }
@@ -23,7 +23,7 @@ ident!(
     ///
     /// In case of a TRIGGER `here` should evaluate
     /// to a RecordSet that contains (among others) `NEW`
-    /// and would have cotnained `OLD`
+    /// and would have contained `OLD`
     ///
     /// Example `WHERE "user" = {user}`
     ///
@@ -34,7 +34,7 @@ ident!(
 );
 
 ident!(
-    /// Contains a refference to the variable `here`
+    /// Contains a refference to the variable `we`
     /// which should be set by the outside context
     /// such that it evaluates to a SELECT query that
     /// returns a RecordSet that is a reasonable sub set
@@ -51,6 +51,13 @@ ident!(
 );
 
 ident!(
-    /// Just an x, use as a placeholder variable
+    /// Just an `x`, use as a placeholder variable
+    /// e.g. to de-sugar `all(list)` into `all(list, x, x)`
+    ///
+    /// WARNING: should never be used with the assumption
+    /// that a user supplied expression references `x` or
+    /// that `x` was supplied by a user! This is because
+    /// the variable may be shadowed by or be shadowing
+    /// an actual variable called `x`
     x
 );

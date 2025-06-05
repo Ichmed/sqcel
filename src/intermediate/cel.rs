@@ -6,7 +6,7 @@ use crate::{
     variables::{Atom, Object, Variable},
 };
 
-use super::{AccessChain, Error, Expression, Ident, ToIntermediate};
+use super::{AccessChain, Error, Expression, ExpressionInner, Ident, ToIntermediate};
 
 macro_rules! box_ex {
     ($tp:ident, $ex:ident) => {
@@ -46,22 +46,22 @@ impl ToIntermediate for CelExpression {
 
         Ok(match self {
             CelExpression::Arithmetic(a, op, b) => {
-                Expression::Arithmetic(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
+                ExpressionInner::Arithmetic(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
             }
             CelExpression::Relation(a, op, b) => {
-                Expression::Relation(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
+                ExpressionInner::Relation(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
             }
             CelExpression::Ternary(a, b, c) => {
-                Expression::Ternary(box_ex!(tp, a), box_ex!(tp, b), box_ex!(tp, c))
+                ExpressionInner::Ternary(box_ex!(tp, a), box_ex!(tp, b), box_ex!(tp, c))
             }
-            CelExpression::Or(a, b) => Expression::Or(box_ex!(tp, a), box_ex!(tp, b)),
-            CelExpression::And(a, b) => Expression::And(box_ex!(tp, a), box_ex!(tp, b)),
+            CelExpression::Or(a, b) => ExpressionInner::Or(box_ex!(tp, a), box_ex!(tp, b)),
+            CelExpression::And(a, b) => ExpressionInner::And(box_ex!(tp, a), box_ex!(tp, b)),
             CelExpression::Unary(unary_op, e) => {
-                Expression::Unary(unary_op.clone(), box_ex!(tp, e))
+                ExpressionInner::Unary(unary_op.clone(), box_ex!(tp, e))
             }
             CelExpression::Member(expression, member) => resolve_member(tp, expression, member)?,
             CelExpression::FunctionCall(name, rec, args) => {
-                Expression::FunctionCall(functions::get(
+                ExpressionInner::FunctionCall(functions::get(
                     tp,
                     name.to_sqcel(tp)?,
                     rec.as_ref().map(|rec| rec.to_sqcel(tp)).transpose()?,
@@ -70,20 +70,20 @@ impl ToIntermediate for CelExpression {
                         .collect::<Result<_>>()?,
                 )?)
             }
-            CelExpression::List(expressions) => Expression::Variable(Variable::List(
+            CelExpression::List(expressions) => ExpressionInner::Variable(Variable::List(
                 expressions
                     .iter()
                     .map(|x| x.to_sqcel(tp))
                     .collect::<Result<_>>()?,
             )),
-            CelExpression::Map(items) => Expression::Variable(Variable::Object(Object {
+            CelExpression::Map(items) => ExpressionInner::Variable(Variable::Object(Object {
                 data: items
                     .iter()
                     .map(|(k, v)| Ok((k.to_sqcel(tp)?, v.to_sqcel(tp)?)))
                     .collect::<Result<_>>()?,
                 schema: None,
             })),
-            CelExpression::Atom(atom) => Expression::Variable(Variable::Atom(match atom {
+            CelExpression::Atom(atom) => ExpressionInner::Variable(Variable::Atom(match atom {
                 CelAtom::Int(i) => Atom::Int(*i),
                 CelAtom::UInt(u) => Atom::UInt(*u),
                 CelAtom::Float(f) => Atom::Float(*f),
@@ -92,8 +92,11 @@ impl ToIntermediate for CelExpression {
                 CelAtom::Bool(b) => Atom::Bool(*b),
                 CelAtom::Null => Atom::Null,
             })),
-            CelExpression::Ident(i) => Expression::Access(AccessChain::new(vec![Ident(i.clone())])),
-        })
+            CelExpression::Ident(i) => {
+                ExpressionInner::Access(AccessChain::new(vec![Ident(i.clone())]))
+            }
+        }
+        .into_anonymous())
     }
 }
 
@@ -101,44 +104,49 @@ fn resolve_member(
     tp: &Transpiler,
     expression: &CelExpression,
     member: &Member,
-) -> Result<Expression> {
+) -> Result<ExpressionInner> {
     Ok(match member {
-        Member::Attribute(s) => match expression.to_sqcel(tp)? {
-            Expression::Access(mut access_chain) => {
-                access_chain.idents.push(Ident(s.clone()));
-                Expression::Access(access_chain)
-            }
-            ref e @ Expression::Variable(ref v) => match v {
-                Variable::Object { .. } => Expression::Access(AccessChain {
-                    head: Some(Box::new(e.clone())),
+        Member::Attribute(s) => {
+            let x = expression.to_sqcel(tp)?;
+            match &*x.inner {
+                ExpressionInner::Access(access_chain) => {
+                    let mut access_chain = access_chain.clone();
+                    access_chain.idents.push(Ident(s.clone()));
+                    ExpressionInner::Access(access_chain)
+                }
+                ExpressionInner::Variable(v) => match v {
+                    Variable::Object { .. } => ExpressionInner::Access(AccessChain {
+                        head: Some(Box::new(x)),
+                        idents: vec![Ident(s.clone())],
+                    }),
+                    _ => return Err(Error::Todo("Does not support member access")),
+                },
+                _ => ExpressionInner::Access(AccessChain {
+                    head: Some(Box::new(x)),
                     idents: vec![Ident(s.clone())],
                 }),
-                _ => return Err(Error::Todo("Does not support member access")),
-            },
-            e => Expression::Access(AccessChain {
-                head: Some(Box::new(e)),
-                idents: vec![Ident(s.clone())],
-            }),
-        },
-        Member::Index(index) => Expression::Index(
+            }
+        }
+        Member::Index(index) => ExpressionInner::Index(
             box_ex!(tp, expression),
             match **index {
                 CelExpression::Atom(cel_parser::Atom::Int(i)) => i,
                 _ => return Err(Error::Todo("None int index")),
             },
         ),
-        Member::Fields(items) => Expression::Variable(Variable::Object(Object {
+        Member::Fields(items) => ExpressionInner::Variable(Variable::Object(Object {
             data: items
                 .iter()
                 .map(|(k, v)| {
                     Ok((
-                        Expression::Variable(Variable::Atom(Atom::String(k.clone()))),
+                        ExpressionInner::Variable(Variable::Atom(Atom::String(k.clone())))
+                            .into_anonymous(),
                         v.to_sqcel(tp)?,
                     ))
                 })
                 .collect::<Result<_>>()?,
-            schema: match expression.to_sqcel(tp)? {
-                Expression::Access(access) => Some(access),
+            schema: match &*expression.to_sqcel(tp)?.inner {
+                ExpressionInner::Access(access) => Some(access.clone()),
                 _ => unreachable!(),
             },
         })),
@@ -147,7 +155,7 @@ fn resolve_member(
 
 impl ToIntermediate for CelValue {
     fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression> {
-        Ok(Expression::Variable(match self {
+        Ok(ExpressionInner::Variable(match self {
             CelValue::List(values) => Variable::List(
                 values
                     .iter()
@@ -170,17 +178,19 @@ impl ToIntermediate for CelValue {
             CelValue::Bool(b) => Variable::Atom(Atom::Bool(*b)),
             CelValue::Null => Variable::Atom(Atom::Null),
             _ => todo!(),
-        }))
+        })
+        .into_anonymous())
     }
 }
 
 impl ToIntermediate for Key {
     fn to_sqcel(&self, _tp: &Transpiler) -> Result<Expression> {
         Ok(match self {
-            Key::Int(i) => Expression::Variable(Variable::Atom(Atom::Int(*i))),
-            Key::Uint(u) => Expression::Variable(Variable::Atom(Atom::UInt(*u))),
-            Key::Bool(b) => Expression::Variable(Variable::Atom(Atom::Bool(*b))),
-            Key::String(s) => Expression::Variable(Variable::Atom(Atom::String(s.clone()))),
-        })
+            Key::Int(i) => ExpressionInner::Variable(Variable::Atom(Atom::Int(*i))),
+            Key::Uint(u) => ExpressionInner::Variable(Variable::Atom(Atom::UInt(*u))),
+            Key::Bool(b) => ExpressionInner::Variable(Variable::Atom(Atom::Bool(*b))),
+            Key::String(s) => ExpressionInner::Variable(Variable::Atom(Atom::String(s.clone()))),
+        }
+        .into_anonymous())
     }
 }

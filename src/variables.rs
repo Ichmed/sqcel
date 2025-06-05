@@ -3,6 +3,7 @@ use crate::{
     functions::subquery,
     intermediate::{AccessChain, Expression, ToSql},
     transpiler::{ParseError, Result, alias},
+    types::{JsonType, Type, TypedExpression},
 };
 use sea_query::{Alias, Func, Query, SelectStatement, SimpleExpr};
 use std::{collections::HashMap, sync::Arc};
@@ -95,38 +96,47 @@ impl Object {
 }
 
 impl ToSql for Object {
-    fn to_sql(&self, tp: &Transpiler) -> Result<SimpleExpr> {
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         self.verify(tp)?;
-        Ok(SimpleExpr::FunctionCall(
-            Func::cust(Alias::new("jsonb_build_object")).args(
-                self.data
-                    .iter()
-                    .map(|(k, v)| Ok([k.to_sql(tp)?, v.to_sql(tp)?]))
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .flatten(),
+        Ok(TypedExpression {
+            ty: Type::Unknown,
+            expr: SimpleExpr::FunctionCall(
+                Func::cust(Alias::new("jsonb_build_object")).args(
+                    self.data
+                        .iter()
+                        .map(|(k, v)| Ok([k.to_sql(tp)?.expr, v.to_sql(tp)?.expr]))
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .flatten(),
+                ),
             ),
-        ))
+        })
     }
 }
 
 impl ToSql for Variable {
-    fn to_sql(&self, tp: &Transpiler) -> Result<SimpleExpr> {
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         Ok(match self {
             Variable::Object(o) => o.to_sql(tp)?,
-            Variable::List(variables) => SimpleExpr::FunctionCall(
-                Func::cust(Alias::new("jsonb_build_array")).args(
-                    variables
-                        .iter()
-                        .map(|x| x.clone().to_sql(tp))
-                        .collect::<Result<Vec<_>>>()?,
+            Variable::List(variables) => TypedExpression {
+                ty: Type::Json(JsonType::List),
+                expr: SimpleExpr::FunctionCall(
+                    Func::cust(Alias::new("jsonb_build_array")).args(
+                        variables
+                            .iter()
+                            .map(|x| Ok(x.clone().to_sql(tp)?.expr))
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
                 ),
-            ),
+            },
             Variable::Atom(atom) => atom.to_sql(tp)?,
 
             Variable::SqlSubQuery(select_statement) => subquery(*select_statement.clone()),
             Variable::SqlSubQueryAtom(select_statement) => subquery(*select_statement.clone()),
-            Variable::SqlAny(simple_expr) => *simple_expr.clone(),
+            Variable::SqlAny(simple_expr) => TypedExpression {
+                ty: Type::Unknown,
+                expr: *simple_expr.clone(),
+            },
         })
     }
 }
@@ -153,7 +163,7 @@ impl Variable {
 
             Variable::List(_) => Query::select()
                 .expr_as(
-                    Func::cust(alias("jsonb_array_elements")).arg(self.to_sql(tp)?),
+                    Func::cust(alias("jsonb_array_elements")).arg(self.to_sql(tp)?.expr),
                     alias(a),
                 )
                 .take(),
@@ -165,8 +175,14 @@ impl Variable {
     pub fn to_select(&self, tp: &Transpiler) -> Result<SelectStatement> {
         Ok(match self {
             Variable::SqlSubQuery(select_statement) => *select_statement.clone(),
-            other => Query::select().expr(other.to_sql(tp)?).take(),
+            other => Query::select().expr(other.to_sql(tp)?.expr).take(),
         })
+    }
+}
+
+impl From<i64> for Variable {
+    fn from(value: i64) -> Self {
+        Self::Atom(Atom::from(value))
     }
 }
 
@@ -190,5 +206,11 @@ impl Atom {
             Atom::UInt(u) => Ok(*u),
             _ => Err(ParseError::Todo("Must be an integer")),
         }
+    }
+}
+
+impl From<i64> for Atom {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
     }
 }

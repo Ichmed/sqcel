@@ -6,4 +6,5 @@ pub mod functions;
 pub mod hacks;
 pub mod intermediate;
 pub mod magic;
+pub mod types;
 pub mod variables;

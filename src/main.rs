@@ -3,14 +3,16 @@ pub mod hacks;
 pub mod intermediate;
 pub mod magic;
 pub mod transpiler;
+pub mod types;
 pub mod variables;
 
-use crate::transpiler::Transpiler;
+use crate::transpiler::{Transpiler, alias};
+use crate::types::{SqlType, Type};
 use clap::Parser;
-use sea_query::{Asterisk, ColumnRef, SimpleExpr as SqlExpression, Value};
+use sea_query::Asterisk;
 use sqcel::{PostgresQueryBuilder, Query};
+use std::time::SystemTime;
 use std::{io::BufRead, path::PathBuf};
-use transpiler::alias;
 use variables::Variable;
 
 pub use transpiler::ParseError as Error;
@@ -52,7 +54,7 @@ struct Cli {
 }
 
 impl Cli {
-    fn into_transpiler(self) -> Transpiler {
+    fn into_transpiler(self) -> Result<Transpiler> {
         let Self {
             variables,
             columns,
@@ -124,7 +126,7 @@ impl Cli {
             Default::default()
         };
 
-        Transpiler {
+        Ok(Transpiler {
             columns,
             tables,
             schemas,
@@ -138,12 +140,12 @@ impl Cli {
         .vars(variables)
         .record("NEW")
         .record("OLD")
-        .build()
+        .build())
     }
 }
 
-fn main() {
-    let transpiler = Cli::parse().into_transpiler();
+fn main() -> miette::Result<()> {
+    let transpiler = Cli::parse().into_transpiler()?;
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();
         if line.is_empty() {
@@ -160,7 +162,11 @@ fn main() {
                 }
                 println!();
             }
-            Err(err) => eprintln!("{err}"),
+            Err(err) => {
+                let err = miette::Error::from(err);
+                eprintln!("{err:?}");
+            }
         }
     }
+    Ok(())
 }

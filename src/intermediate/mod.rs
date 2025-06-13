@@ -288,13 +288,34 @@ impl ToSql for AccessChain {
                     }),
                 rest,
             ),
-            (None, [column, rest @ ..]) if tp.columns.contains_key(column.as_str()) => (
-                tp.columns
-                    .get(column.as_str())
-                    .map(|column_name| TypedExpression {
-                        ty: Type::RecordSet,
-                        expr: SimpleExpr::Column(ColumnRef::Column(alias(column_name))),
+            (None, [record, column, rest @ ..]) if tp.records.contains_key(record.as_str()) => (
+                tp.records
+                    .get(record.as_str())
+                    .map(|table_name| TypedExpression {
+                        ty: Type::Unknown,
+                        expr: SimpleExpr::Column(ColumnRef::TableColumn(
+                            alias(table_name),
+                            alias(column.as_str()),
+                        )),
                     }),
+                rest,
+            ),
+            (None, [column, rest @ ..]) if tp.columns.contains_key(column.as_str()) => (
+                if tp.trigger_mode {
+                    tp.columns
+                        .get(column.as_str())
+                        .map(|column_name| TypedExpression {
+                            ty: Type::RecordSet,
+                            expr: SimpleExpr::Custom(format!("NEW.{column_name}")),
+                        })
+                } else {
+                    tp.columns
+                        .get(column.as_str())
+                        .map(|column_name| TypedExpression {
+                            ty: Type::RecordSet,
+                            expr: SimpleExpr::Column(ColumnRef::Column(alias(column_name))),
+                        })
+                },
                 rest,
             ),
             (None, [table, rest @ ..]) if tp.tables.contains_key(table.as_str()) => (

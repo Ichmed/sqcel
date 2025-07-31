@@ -1,9 +1,10 @@
-use std::result::Result;
+use std::{collections::HashMap, result::Result, str::FromStr};
 
 use sea_query::{Func, SimpleExpr};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::transpiler::alias;
+use crate::{structure::Column, transpiler::alias};
 
 pub trait TypeConversion {
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError>;
@@ -39,14 +40,34 @@ pub enum ConversionError {
     UnimplementedConvertion(Type, Type),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+impl From<RecordSet> for Type {
+    fn from(value: RecordSet) -> Self {
+        Self::RecordSet(Box::new(value))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct RecordSet(pub HashMap<String, Column>, pub bool);
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Type {
     Json(JsonType),
     Sql(SqlType),
     Array(Box<Type>),
-    RecordSet,
+    Schema,
+    RecordSet(Box<RecordSet>),
     Unknown,
     Null,
+}
+
+impl Type {
+    pub fn inner(&self) -> Type {
+        match self {
+            Self::Array(t) => *t.clone(),
+            Self::Json(JsonType::List) => JsonType::Any.into(),
+            _ => Self::Null,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -59,7 +80,7 @@ pub enum JsonType {
     String,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Deserialize, Serialize)]
 pub enum SqlType {
     String,
     Boolean,
@@ -71,8 +92,34 @@ pub enum SqlType {
     /// SQL will try to match this type to
     /// whatever is needed
     Inferred,
-    TimeNoZone,
+    Time,
     Double,
+    JSON,
+    Null,
+}
+
+impl FromStr for SqlType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "text" => Self::String,
+            "bool" => Self::Boolean,
+            "boolean" => Self::Boolean,
+            "int" => Self::Integer,
+            "integer" => Self::Integer,
+            "uint" => Self::UInteger,
+            "null" => Self::Null,
+            "unsigned integer" => Self::UInteger,
+            "float" => Self::Float,
+            "double" => Self::Double,
+            "bytes" => Self::Bytes,
+            "timestamp with time zone" => Self::Time,
+            "timestamp" => Self::Time,
+            "_" => Self::Inferred,
+            _ => return Err(()),
+        })
+    }
 }
 
 fn simple_func(name: &str, arg: SimpleExpr) -> SimpleExpr {
@@ -88,8 +135,8 @@ impl TypeConversion for Type {
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
         match self {
             Type::Json(json_type) => json_type.try_convert(expr),
-            Type::RecordSet if expr.ty == Type::RecordSet => Ok(expr),
-            Type::RecordSet if expr.ty == Type::Json(JsonType::List) => Ok(TypedExpression {
+            Type::RecordSet(_) if matches!(expr.ty, Type::RecordSet(_)) => Ok(expr),
+            Type::RecordSet(_) if expr.ty == Type::Json(JsonType::List) => Ok(TypedExpression {
                 expr: simple_func("jsonb_array_elements", expr.expr),
                 ty: self.clone(),
             }),
@@ -140,7 +187,7 @@ impl TypeConversion for JsonType {
                 expr: simple_func("to_json", expr.expr),
                 ty: Self::Boolean.into(),
             }),
-            (Type::RecordSet, Self::Any | Self::List) => Ok(TypedExpression {
+            (Type::RecordSet(_), Self::Any | Self::List) => Ok(TypedExpression {
                 expr: simple_func("to_json", simple_func("array", expr.expr)),
                 ty: Self::List.into(),
             }),

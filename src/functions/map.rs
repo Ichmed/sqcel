@@ -1,7 +1,9 @@
 use super::{Function, subquery};
+use crate::Transpiler;
 use crate::intermediate::{Expression, ExpressionInner, Rc, ToSql};
+use crate::structure::Column;
 use crate::transpiler::alias;
-use crate::types::{Type, TypedExpression};
+use crate::types::{RecordSet, SqlType, Type, TypedExpression};
 use crate::variables::{Object, Variable};
 use crate::{Result, intermediate::Ident};
 use sea_query::{ArrayType, ColumnRef, Func, Query, SimpleExpr, Value};
@@ -29,20 +31,22 @@ impl Map {
     }
 }
 
-impl Function for Map {
-    fn returntype(&self) -> Type {
-        Type::RecordSet
-    }
-}
+impl Function for Map {}
 
 impl ToSql for Map {
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        Type::RecordSet(Box::new(RecordSet(Default::default(), true)))
+    }
+
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
-        let tp = tp.to_builder().table(&self.var).build();
+        let varname = self.var.to_string();
+        let tp = tp
+            .clone()
+            .enter_anonymous_table([(varname.clone(), Column::new(varname, SqlType::JSON))].into());
 
         let func = match self.func.as_single_ident() {
-            Ok(func) if *func == self.var => {
-                SimpleExpr::Column(ColumnRef::Asterisk).assume(&tp, Type::RecordSet)?
-            }
+            Ok(func) if *func == self.var => SimpleExpr::Column(ColumnRef::Asterisk)
+                .assume(&tp, RecordSet(Default::default(), true).into())?,
             _ => self.func.to_sql(&tp)?,
         };
         let filter = self
@@ -57,16 +61,16 @@ impl ToSql for Map {
         Ok(subquery(
             match &*self.rec {
                 ExpressionInner::Variable(Variable::Object(Object { data, .. })) => {
-                    q.from_function(object_keys(data)?, alias("_"))
+                    q.from_function(object_keys(data)?, self.var.clone())
                 }
                 _ => q.from_subquery(
-                    self.rec.to_record_set(&tp, self.var.as_str())?,
+                    self.rec.to_record_set(&tp, alias(self.var.clone()))?,
                     self.var.clone(),
                 ),
             }
             .take(),
         )
-        .assume_is(Type::RecordSet))
+        .assume_is(RecordSet(Default::default(), true).into()))
     }
 }
 

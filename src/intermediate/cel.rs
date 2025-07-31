@@ -3,6 +3,7 @@ use cel_parser::{Atom as CelAtom, Expression as CelExpression, Member};
 
 use crate::{
     Result, Transpiler, functions,
+    transpiler::ParseError,
     variables::{Atom, Object, Variable},
 };
 
@@ -17,7 +18,7 @@ macro_rules! box_ex {
 impl ToIntermediate for CelExpression {
     fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression> {
         if tp.reduce {
-            match CelValue::resolve(self, &tp.to_context().unwrap()) {
+            match CelValue::resolve(self, &tp.to_context()?) {
                 // We succesfully reduced the expression down to a single value
                 // that can be baked into the SQL as a constant
                 Ok(value) => return value.to_sqcel(tp),
@@ -177,7 +178,9 @@ impl ToIntermediate for CelValue {
             CelValue::Bytes(items) => Variable::Atom(Atom::Bytes(items.clone())),
             CelValue::Bool(b) => Variable::Atom(Atom::Bool(*b)),
             CelValue::Null => Variable::Atom(Atom::Null),
-            _ => todo!(),
+            CelValue::Function(_, _) => {
+                return Err(ParseError::Todo("Function pointers are not supported"));
+            }
         })
         .into_anonymous())
     }

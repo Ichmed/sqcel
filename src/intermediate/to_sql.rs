@@ -1,9 +1,11 @@
-use sea_query::{Query, SelectStatement, SimpleExpr, SubQueryStatement};
+use std::collections::HashMap;
+
+use sea_query::{DynIden, Query, SelectStatement, SimpleExpr, SubQueryStatement};
 
 use crate::{
     Result, Transpiler,
-    transpiler::alias,
-    types::{Type, TypeConversion, TypedExpression},
+    structure::Column,
+    types::{RecordSet, Type, TypeConversion, TypedExpression},
 };
 
 pub trait ToSql {
@@ -20,14 +22,37 @@ pub trait ToSql {
         })
     }
 
-    fn to_record_set(&self, tp: &Transpiler, a: &str) -> Result<SelectStatement> {
-        Ok(match self.cast(tp, Type::RecordSet)? {
-            SimpleExpr::SubQuery(_, x) => match *x {
-                SubQueryStatement::SelectStatement(select_statement) => select_statement,
-                _ => todo!(),
+    fn returntype(&self, tp: &Transpiler) -> Type;
+
+    fn to_record_set(&self, tp: &Transpiler, alias: DynIden) -> Result<SelectStatement> {
+        Ok(
+            match self.cast(
+                tp,
+                Type::RecordSet(Box::new(RecordSet(Default::default(), false))),
+            )? {
+                SimpleExpr::SubQuery(_, x) => match *x {
+                    SubQueryStatement::SelectStatement(select_statement) => select_statement,
+                    _ => unimplemented!(
+                        "SQCEL should never generate a statement that is not a select statement"
+                    ),
+                },
+                x => dbg!(Query::select().expr_as(x, alias).take()),
             },
-            x => Query::select().expr_as(x, alias(a)).take(),
-        })
+        )
+    }
+
+    fn columns(&self, tp: &Transpiler) -> HashMap<String, Column> {
+        match self.returntype(tp) {
+            Type::RecordSet(r) => r.0.clone(),
+            _ => Default::default(),
+        }
+    }
+
+    fn has_column(&self, s: &str, tp: &Transpiler) -> bool {
+        match self.returntype(tp) {
+            Type::RecordSet(r) => r.0.contains_key(s),
+            _ => false,
+        }
     }
 }
 
@@ -37,6 +62,10 @@ impl ToSql for SimpleExpr {
             expr: self.clone(),
             ty: Type::Unknown,
         })
+    }
+
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        Type::Unknown
     }
 }
 

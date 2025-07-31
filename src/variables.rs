@@ -2,8 +2,9 @@ use crate::{
     Transpiler,
     functions::subquery,
     intermediate::{AccessChain, Expression, ToSql},
+    structure::Column,
     transpiler::{ParseError, Result, alias},
-    types::{JsonType, Type, TypedExpression},
+    types::{JsonType, RecordSet, Type, TypedExpression},
 };
 use sea_query::{Alias, Func, Query, SelectStatement, SimpleExpr};
 use std::{collections::HashMap, sync::Arc};
@@ -17,9 +18,9 @@ pub enum Variable {
     /// A String, int, float, etc.
     Atom(Atom),
     /// An SQL query that will evaluate to a list
-    SqlSubQuery(Box<SelectStatement>),
+    SqlSubQuery(Box<SelectStatement>, HashMap<String, Column>),
     /// An SQL query that will evaluate to a single record
-    SqlSubQueryAtom(Box<SelectStatement>),
+    SqlSubQueryAtom(Box<SelectStatement>, HashMap<String, Column>),
     /// An SQL expression that will evaluate to anything
     SqlAny(Box<SimpleExpr>),
 }
@@ -112,6 +113,10 @@ impl ToSql for Object {
             ),
         })
     }
+
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        Type::Json(JsonType::Map)
+    }
 }
 
 impl ToSql for Variable {
@@ -131,13 +136,28 @@ impl ToSql for Variable {
             },
             Variable::Atom(atom) => atom.to_sql(tp)?,
 
-            Variable::SqlSubQuery(select_statement) => subquery(*select_statement.clone()),
-            Variable::SqlSubQueryAtom(select_statement) => subquery(*select_statement.clone()),
+            Variable::SqlSubQuery(select_statement, _) => subquery(*select_statement.clone()),
+            Variable::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
             Variable::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),
             },
         })
+    }
+
+    fn returntype(&self, tp: &Transpiler) -> Type {
+        match self {
+            Variable::Object(_) => JsonType::Map.into(),
+            Variable::List(_) => JsonType::List.into(),
+            Variable::Atom(atom) => atom.returntype(tp),
+            Variable::SqlSubQuery(_, cols) => {
+                Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
+            }
+            Variable::SqlSubQueryAtom(_, cols) => {
+                Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
+            }
+            Variable::SqlAny(_) => Type::Unknown,
+        }
     }
 }
 
@@ -156,7 +176,7 @@ impl Variable {
     /// Turn this into a recordset
     pub fn to_record_set(&self, tp: &Transpiler, a: &str) -> Result<SelectStatement> {
         Ok(match self {
-            Variable::SqlSubQuery(select_statement) => *select_statement.clone(),
+            Variable::SqlSubQuery(select_statement, _) => *select_statement.clone(),
             Variable::List(content) if content.iter().all(Expression::is_object) => {
                 todo!("populate_record_set")
             }
@@ -174,7 +194,7 @@ impl Variable {
     /// Turn this into a select query
     pub fn to_select(&self, tp: &Transpiler) -> Result<SelectStatement> {
         Ok(match self {
-            Variable::SqlSubQuery(select_statement) => *select_statement.clone(),
+            Variable::SqlSubQuery(select_statement, _) => *select_statement.clone(),
             other => Query::select().expr(other.to_sql(tp)?.expr).take(),
         })
     }

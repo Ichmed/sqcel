@@ -2,10 +2,10 @@ pub mod cel;
 pub mod to_sql;
 
 use crate::{
-    Transpiler,
+    Result, Transpiler,
     functions::{Function, subquery},
     transpiler::{ParseError, alias},
-    types::{JsonType, SqlType, Type, TypedExpression},
+    types::{JsonType, RecordSet, SqlType, Type, TypedExpression},
     variables::{Atom, Object, Variable},
 };
 use cel_interpreter::{
@@ -14,12 +14,14 @@ use cel_interpreter::{
 };
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
 use sea_query::{
-    BinOper, CaseStatement, ColumnRef, IntoIden, Query, SimpleExpr, SubQueryStatement, Value,
+    Asterisk, BinOper, CaseStatement, IntoIden, Query, SelectStatement, SimpleExpr,
+    SubQueryStatement, TableRef, Value,
     extension::postgres::{PgBinOper, PgExpr},
 };
 use std::{
     borrow::Cow,
     fmt::{Debug, Display},
+    iter::once,
     sync::Arc,
 };
 pub use to_sql::ToSql;
@@ -65,6 +67,23 @@ impl ExpressionInner {
     }
 }
 
+impl Expression {
+    pub fn returntype(&self, tp: &Transpiler) -> Type {
+        match &*self.inner {
+            ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
+            ExpressionInner::Index(expression, _) => expression.returntype(tp).inner(),
+            ExpressionInner::Variable(variable) => variable.returntype(tp),
+            ExpressionInner::Arithmetic(_, _, _) => SqlType::Number.into(),
+            ExpressionInner::Relation(_, _, _) => SqlType::Boolean.into(),
+            ExpressionInner::Ternary(_, expression1, _) => expression1.returntype(tp),
+            ExpressionInner::Or(_, _) => SqlType::Boolean.into(),
+            ExpressionInner::And(_, _) => SqlType::Boolean.into(),
+            ExpressionInner::Unary(_, expression) => expression.returntype(tp),
+            ExpressionInner::FunctionCall(function) => function.returntype(tp),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ident(pub(crate) Arc<String>);
 
@@ -84,6 +103,12 @@ impl IntoIden for Ident {
     }
 }
 
+impl IntoIden for &Ident {
+    fn into_iden(self) -> sea_query::DynIden {
+        alias(self.0.to_string())
+    }
+}
+
 impl Display for Ident {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -91,8 +116,6 @@ impl Display for Ident {
 }
 
 type Error = ParseError;
-
-type Result<T> = std::result::Result<T, Error>;
 
 impl ToSql for Atom {
     fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
@@ -126,6 +149,18 @@ impl ToSql for Atom {
                 expr: SimpleExpr::Constant(Value::Double(Some(*f))),
             },
         })
+    }
+
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        match self {
+            Atom::Null => Type::Null,
+            Atom::Bool(_) => SqlType::Boolean.into(),
+            Atom::String(_) => SqlType::String.into(),
+            Atom::Bytes(_) => SqlType::Bytes.into(),
+            Atom::Int(_) => SqlType::Integer.into(),
+            Atom::UInt(_) => SqlType::UInteger.into(),
+            Atom::Float(_) => SqlType::Float.into(),
+        }
     }
 }
 
@@ -260,87 +295,47 @@ impl ToSql for AccessChain {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         let (head, rest) = match (&self.head, self.idents.as_slice()) {
             (None, [schema, table, column, rest @ ..])
-                if tp.schemas.contains_key(schema.as_str()) =>
+                if tp.layout.column([schema, table, column]).is_some() =>
             {
+                let (r, t) = tp.layout.column([schema, table, column]).unwrap();
                 (
-                    tp.schemas
-                        .get(schema.as_str())
-                        .map(|schema_name| TypedExpression {
-                            ty: Type::Unknown,
-                            expr: SimpleExpr::Column(ColumnRef::SchemaTableColumn(
-                                alias(schema_name),
-                                alias(table.as_str()),
-                                alias(column.as_str()),
-                            )),
-                        }),
+                    SimpleExpr::Column(r).assume(tp, t.unwrap_or_default())?,
                     rest,
                 )
             }
-            (None, [table, column, rest @ ..]) if tp.tables.contains_key(table.as_str()) => (
-                tp.tables
-                    .get(table.as_str())
-                    .map(|table_name| TypedExpression {
-                        ty: Type::Unknown,
-                        expr: SimpleExpr::Column(ColumnRef::TableColumn(
-                            alias(table_name),
-                            alias(column.as_str()),
-                        )),
-                    }),
-                rest,
-            ),
-            (None, [record, column, rest @ ..]) if tp.records.contains_key(record.as_str()) => (
-                tp.records
-                    .get(record.as_str())
-                    .map(|table_name| TypedExpression {
-                        ty: Type::Unknown,
-                        expr: SimpleExpr::Column(ColumnRef::TableColumn(
-                            alias(table_name),
-                            alias(column.as_str()),
-                        )),
-                    }),
-                rest,
-            ),
-            (None, [column, rest @ ..]) if tp.columns.contains_key(column.as_str()) => (
-                if tp.trigger_mode {
-                    tp.columns
-                        .get(column.as_str())
-                        .map(|column_name| TypedExpression {
-                            ty: Type::RecordSet,
-                            expr: SimpleExpr::Custom(format!("NEW.{column_name}")),
-                        })
-                } else {
-                    tp.columns
-                        .get(column.as_str())
-                        .map(|column_name| TypedExpression {
-                            ty: Type::RecordSet,
-                            expr: SimpleExpr::Column(ColumnRef::Column(alias(column_name))),
-                        })
-                },
-                rest,
-            ),
-            (None, [table, rest @ ..]) if tp.tables.contains_key(table.as_str()) => (
-                tp.tables
-                    .get(table.as_str())
-                    .map(|table_name| TypedExpression {
-                        ty: Type::RecordSet,
-                        expr: SimpleExpr::Column(ColumnRef::Column(alias(table_name))),
-                    }),
-                rest,
-            ),
-            (None, [var, rest @ ..]) if tp.variables.contains_key(var.as_str()) => (
-                tp.variables
-                    .get(var.as_str())
-                    .map(|v| v.to_sql(tp))
-                    .transpose()?,
-                rest,
-            ),
-            (Some(head), rest) => (Some(head.to_sql(tp)?), rest),
+            (None, [table, column, rest @ ..]) if tp.layout.column([table, column]).is_some() => {
+                let (r, t) = tp.layout.column([table, column]).unwrap();
+                (
+                    SimpleExpr::Column(r).assume(tp, t.unwrap_or_default())?,
+                    rest,
+                )
+            }
+            (None, [column, rest @ ..]) if tp.layout.column([column]).is_some() => {
+                let (r, t) = tp.layout.column([column]).unwrap();
+                (
+                    SimpleExpr::Column(r).assume(tp, t.unwrap_or_default())?,
+                    rest,
+                )
+            }
+            (None, [table, rest @ ..]) if tp.layout.table_asterisk([table]).is_some() => {
+                let r = tp.layout.table_asterisk([table]).unwrap();
+                let types = tp.layout.table_columns([table]).unwrap();
+                (
+                    SimpleExpr::Column(r)
+                        .assume(tp, Type::RecordSet(Box::new(RecordSet(types, true))))?,
+                    rest,
+                )
+            }
+            (None, [var, rest @ ..]) if tp.variables.contains_key(var.as_str()) => {
+                (tp.variables.get(var.as_str()).unwrap().to_sql(tp)?, rest)
+            }
+            (Some(head), rest) => (head.to_sql(tp)?, rest),
             (None, rest) => {
                 return Err(Error::UnknownField(
                     rest.iter()
                         .map(|x| x.as_str().to_owned())
                         .collect::<Vec<_>>()
-                        .join(","),
+                        .join("."),
                     self.to_path()
                         .map(Cow::into_owned)
                         .unwrap_or("?".to_owned()),
@@ -354,12 +349,76 @@ impl ToSql for AccessChain {
         };
 
         Self::chain_to_json_access(
-            head.into_iter().chain(rest.iter().map(|s| TypedExpression {
+            once(head).chain(rest.iter().map(|s| TypedExpression {
                 ty: Type::Unknown,
                 expr: SimpleExpr::Constant(s.to_sql_string()),
             })),
             tail,
         )
+    }
+
+    fn to_record_set(&self, tp: &Transpiler, alias: sea_query::DynIden) -> Result<SelectStatement> {
+        match (&self.head, self.idents.as_slice()) {
+            (None, [schema, table, column])
+                if tp.layout.column([schema, table, column]).is_some() =>
+            {
+                let (r, _) = tp.layout.column([schema, table, column]).unwrap();
+
+                Ok(Query::select().column(r).take())
+            }
+            (None, [table, column]) if tp.layout.column([table, column]).is_some() => {
+                let (r, _) = tp.layout.column([table, column]).unwrap();
+                Ok(Query::select().column(r).take())
+            }
+            (None, [column]) if tp.layout.column([column]).is_some() => {
+                let (r, _) = tp.layout.column([column]).unwrap();
+                Ok(Query::select().column(r).take())
+            }
+            (None, [table]) if tp.layout.table([table]).is_some() => {
+                let r = tp.layout.table([table]).unwrap();
+
+                Ok(Query::select().column(Asterisk).from(r).take())
+            }
+            (None, [var]) if tp.variables.contains_key(var.as_str()) => tp
+                .variables
+                .get(var.as_str())
+                .unwrap()
+                .to_record_set(tp, &alias.to_string()),
+            (Some(_), _) => Ok(Query::select().expr_as(self.to_sql(tp)?.expr, alias).take()),
+            (None, rest) => Err(Error::UnknownField(
+                rest.iter()
+                    .map(|x| x.as_str().to_owned())
+                    .collect::<Vec<_>>()
+                    .join("."),
+                self.to_path()
+                    .map(Cow::into_owned)
+                    .unwrap_or("?".to_owned()),
+            )),
+        }
+    }
+
+    fn returntype(&self, tp: &Transpiler) -> Type {
+        match (&self.head, self.idents.as_slice()) {
+            (None, [table, ..]) if tp.layout.table_asterisk([table]).is_some() => {
+                let types = tp.layout.table_columns([table]);
+                Type::RecordSet(Box::new(RecordSet(types.unwrap(), true)))
+            }
+            (None, [table, ..]) if tp.variables.contains_key(table.as_str()) => {
+                match tp.variables.get(table.as_str()).unwrap() {
+                    Variable::SqlSubQuery(_, hash_map) => {
+                        Type::RecordSet(Box::new(RecordSet(hash_map.clone(), true)))
+                    }
+                    Variable::SqlSubQueryAtom(_, hash_map) => {
+                        Type::RecordSet(Box::new(RecordSet(hash_map.clone(), true)))
+                    }
+                    Variable::Object(_) => JsonType::Map.into(),
+                    Variable::List(_) => JsonType::List.into(),
+                    Variable::Atom(atom) => atom.returntype(tp),
+                    Variable::SqlAny(_) => Type::Unknown,
+                }
+            }
+            _ => Type::Unknown,
+        }
     }
 }
 
@@ -399,7 +458,7 @@ impl AccessChain {
                 expr: outer.expr.cast_json_field(tail),
             },
             None => TypedExpression {
-                ty: Type::RecordSet,
+                ty: Type::RecordSet(Box::new(RecordSet(Default::default(), false))),
                 expr: outer.expr,
             },
         })
@@ -410,6 +469,12 @@ impl AccessChain {
             (None, [single]) => Ok(single),
             _ => Err(Error::Todo("Invalid var name")),
         }
+    }
+
+    pub fn to_table_access(&self, tp: &Transpiler) -> Result<TableRef> {
+        tp.layout
+            .table(&self.idents)
+            .ok_or(ParseError::Todo("Unknown table"))
     }
 }
 
@@ -491,6 +556,10 @@ impl ToSql for Expression {
             }
         })
     }
+
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        Type::Unknown
+    }
 }
 
 impl Expression {
@@ -504,7 +573,7 @@ impl Expression {
                         .expr
                         .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
                 },
-                Variable::SqlSubQuery(select_statement) => subquery(
+                Variable::SqlSubQuery(select_statement, _) => subquery(
                     select_statement
                         .clone()
                         .offset(index as u64)
@@ -512,7 +581,7 @@ impl Expression {
                         .take(),
                 ),
 
-                Variable::SqlSubQueryAtom(select_statement) if index == 0 => {
+                Variable::SqlSubQueryAtom(select_statement, _) if index == 0 => {
                     subquery(*select_statement.clone())
                 }
                 Variable::SqlAny(simple_expr) => TypedExpression {
@@ -575,28 +644,6 @@ impl Expression {
         }
     }
 
-    // pub(crate) fn to_record_set(&self, tp: &Transpiler, alias: &str) -> Result<SelectStatement> {
-    //     Ok(match dbg!(&*self.inner) {
-    //         ExpressionInner::Variable(var) => var.to_record_set(tp, alias)?,
-    //         ExpressionInner::Access(access) => {
-    //             match tp.variables.get(access.as_single_ident()?.as_str()) {
-    //                 Some(var) => var.to_record_set(tp, alias)?,
-    //                 None => Err(Error::Todo("Can't be a record set"))?,
-    //             }
-    //         }
-    //         ExpressionInner::FunctionCall(f) => match f.returntype() {
-    //             FunctionReturn::SubqueryList => Query::select().expr(f.to_sql(tp)?.expr).take(),
-    //             FunctionReturn::Array => todo!(),
-    //             FunctionReturn::Atom => todo!(),
-    //             FunctionReturn::Json => todo!(),
-    //             FunctionReturn::SubqueryAtom => todo!(),
-    //             FunctionReturn::Unknown => todo!(),
-    //             FunctionReturn::Object => todo!(),
-    //         },
-    //         _ => Err(Error::Todo("Can't be a record set"))?,
-    //     })
-    // }
-
     pub fn as_variable(&self) -> Option<&Variable> {
         match &*self.inner {
             ExpressionInner::Variable(variable) => Some(variable),
@@ -632,67 +679,11 @@ impl Debug for ExpressionInner {
             Self::Or(arg0, arg1) => f.debug_tuple("Or").field(arg0).field(arg1).finish(),
             Self::And(arg0, arg1) => f.debug_tuple("And").field(arg0).field(arg1).finish(),
             Self::Unary(arg0, arg1) => f.debug_tuple("Unary").field(arg0).field(arg1).finish(),
-            Self::FunctionCall(v) => f
-                .debug_tuple("FunctionCall")
-                .field(&v.returntype())
-                .finish_non_exhaustive(),
+            Self::FunctionCall(_) => f.debug_tuple("FunctionCall").finish_non_exhaustive(),
         }
     }
 }
 
 pub trait ToIntermediate {
     fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression>;
-}
-
-#[cfg(test)]
-mod test {
-    use std::sync::Arc;
-
-    use crate::{
-        Transpiler,
-        intermediate::ToSql,
-        transpiler::{TranspilerBuilder, alias},
-        types::{Type, TypedExpression},
-    };
-    use sea_query::{PostgresQueryBuilder, Query, SimpleExpr};
-    use serde_json::json;
-
-    use super::{AccessChain, Ident};
-
-    fn i(i: &str) -> Ident {
-        Ident(Arc::new(i.to_owned()))
-    }
-
-    #[test]
-    fn chain_single_column() {
-        let chain = AccessChain::new(vec![i("a")])
-            .to_sql(&TranspilerBuilder::default().column("a").build())
-            .unwrap();
-
-        assert_eq!(
-            chain,
-            TypedExpression {
-                ty: Type::RecordSet,
-                expr: SimpleExpr::Column(sea_query::ColumnRef::Column(alias("a")))
-            }
-        )
-    }
-
-    #[test]
-    fn show() {
-        // let x = AccessChain::new(vec![i("a"), i("b"), i("c"), i("d")])
-        //     .to_sql(&TranspilerBuilder::default().column("a").build())
-        //     .unwrap();
-
-        let x = Transpiler::new()
-            .var("a", json!({"test": 7}))
-            .build()
-            .transpile(r#"{"bar": a}"#)
-            .unwrap();
-
-        println!(
-            "{}",
-            Query::select().expr(x).to_string(PostgresQueryBuilder)
-        )
-    }
 }

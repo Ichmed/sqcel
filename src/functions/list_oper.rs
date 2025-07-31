@@ -1,5 +1,7 @@
 use crate::{
+    Transpiler,
     intermediate::{Expression, Ident},
+    structure::Column,
     transpiler::alias,
     types::{SqlType, Type, TypedExpression},
 };
@@ -42,7 +44,10 @@ pub fn all(source: &Expression, var: &Expression, predicate: &Expression) -> Res
 
 impl ToSql for ListOper {
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
-        let tp = tp.to_builder().column(self.var.as_str()).build();
+        let varname = self.var.to_string();
+        let tp = tp
+            .clone()
+            .enter_anonymous_table([(varname.clone(), Column::new(varname, SqlType::JSON))].into());
 
         let compare = self
             .compare
@@ -51,14 +56,14 @@ impl ToSql for ListOper {
             .transpose()?
             .unwrap_or(SimpleExpr::Constant(true.into()));
         let predicate = self.predicate.to_sql(&tp)?.expr.cast_as(alias("bool"));
-        let source = self.source.to_record_set(&tp, self.var.as_str())?;
+        let source = self.source.to_record_set(&tp, alias("_"))?;
 
         let stream = SimpleExpr::SubQuery(
             Some(self.oper),
             Box::new(SubQueryStatement::SelectStatement(
                 Query::select()
                     .expr(predicate)
-                    .from_subquery(source, alias("_"))
+                    .from_subquery(source, self.var.clone())
                     .take(),
             )),
         );
@@ -68,13 +73,13 @@ impl ToSql for ListOper {
             expr: compare.eq(stream),
         })
     }
-}
 
-impl Function for ListOper {
-    fn returntype(&self) -> Type {
-        Type::Sql(SqlType::Boolean)
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        SqlType::Boolean.into()
     }
 }
+
+impl Function for ListOper {}
 
 #[cfg(test)]
 mod test {
@@ -83,23 +88,14 @@ mod test {
 
     #[test]
     fn de_sugar_all() {
-        let verbose = postgres("all([true, false], x, x)").unwrap();
-        let short = postgres("all([true, false])").unwrap();
-
-        let method = postgres("[true, false].all()").unwrap();
-
-        assert_eq!(verbose, short);
-        assert_eq!(verbose, method);
+        assert_eq!(postgres("[true, false].all(x, x)").unwrap(), "FALSE");
+        assert_eq!(postgres("[true, true].all(x, x)").unwrap(), "TRUE");
     }
 
     #[test]
     fn de_sugar_any() {
-        let verbose = postgres("any([true, false], x, x)").unwrap();
-        let short = postgres("any([true, false])").unwrap();
-
-        let method = postgres("[true, false].any()").unwrap();
-
-        assert_eq!(verbose, short);
-        assert_eq!(verbose, method);
+        assert_eq!(postgres("[true, true].exists(x, x)").unwrap(), "TRUE");
+        assert_eq!(postgres("[true, false].exists(x, x)").unwrap(), "TRUE");
+        assert_eq!(postgres("[false, false].exists(x, x)").unwrap(), "FALSE");
     }
 }

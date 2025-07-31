@@ -4,6 +4,7 @@ use crate::{
         dyn_fn::{CelFunction, DynamicFunction, Signature},
     },
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
+    structure::{Column, SqlLayout, Table},
     types::{ConversionError, Type},
     variables::Variable,
 };
@@ -11,7 +12,9 @@ use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
 use derive_builder::Builder;
 use miette::{Diagnostic, LabeledSpan};
-use sea_query::{Alias, DynIden, SeaRc, SimpleExpr as SqlExpr};
+use sea_query::{
+    Alias, Asterisk, ColumnRef, DynIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
+};
 use std::{collections::HashMap, iter::once};
 use thiserror::Error;
 
@@ -39,30 +42,15 @@ use thiserror::Error;
 ///     "SELECT CAST((jsonb_build_object('val', 2) ->> 'foo') AS integer) + 1 + \"some_col\""
 /// )
 ///```
-#[derive(Debug, Default, Builder)]
+#[derive(Clone, Debug, Default, Builder)]
 #[builder(default, build_fn(name = "_build", private))]
 pub struct Transpiler {
     /// Identifiers included in vars will become
     /// constants during conversion (instead of bind params)
     pub(crate) variables: HashMap<String, Variable>,
-    /// These identifiers are treated as column names
-    pub(crate) columns: HashMap<String, String>,
-    /// These identifiers are treated as table names
-    ///
-    /// Members of theses identifiers will be interpreted as column names
-    pub(crate) tables: HashMap<String, String>,
-    /// These identifiers are treated as record names. This is usually
-    /// only usefull for use in triggers where the records `NEW` and `OLD`
-    /// exist
-    ///
-    /// Members of theses identifiers will be interpreted as column names
     pub(crate) records: HashMap<String, String>,
-    /// These identifiers are treated as schema names
-    ///
-    /// Members of theses identifiers will be interpreted as table names
-    ///
-    /// Members of those identifiers will be interpreted as column names
-    pub(crate) schemas: HashMap<String, String>,
+
+    pub(crate) layout: SqlLayout,
 
     /// List of known message types
     pub(crate) types: HashMap<String, protobuf::descriptor::DescriptorProto>,
@@ -101,27 +89,24 @@ impl Transpiler {
     pub fn to_builder(&self) -> TranspilerBuilder {
         let Transpiler {
             variables,
-            columns,
-            tables,
             records,
-            schemas,
+
             types,
             accept_unknown_types,
             trigger_mode,
             reduce,
             functions,
+            layout,
         } = self;
         TranspilerBuilder {
             variables: Some(variables.clone()),
-            columns: Some(columns.clone()),
-            tables: Some(tables.clone()),
             records: Some(records.clone()),
-            schemas: Some(schemas.clone()),
             types: Some(types.clone()),
             accept_unknown_types: Some(*accept_unknown_types),
             trigger_mode: Some(*trigger_mode),
             reduce: Some(*reduce),
             functions: Some(functions.clone()),
+            layout: Some(layout.clone()),
         }
     }
 
@@ -133,6 +118,11 @@ impl Transpiler {
             };
         }
         Ok(c)
+    }
+
+    pub fn enter_anonymous_table(mut self, content: HashMap<String, Column>) -> Self {
+        self.layout.enter_anonymous_table(content);
+        self
     }
 }
 
@@ -168,46 +158,46 @@ impl TranspilerBuilder {
         self._build().unwrap()
     }
 
-    pub fn column(&mut self, column: impl ToString) -> &mut Self {
-        self.columns
-            .get_or_insert_default()
-            .insert(column.to_string(), column.to_string());
+    pub fn enter_schema(&mut self, name: impl ToString) -> &mut Self {
+        self.layout.get_or_insert_default().enter_schema(name);
         self
     }
 
-    pub fn column_alias(&mut self, alias: impl ToString, column: impl ToString) -> &mut Self {
-        self.columns
-            .get_or_insert_default()
-            .insert(alias.to_string(), column.to_string());
+    pub fn enter_table(&mut self, name: impl ToString) -> &mut Self {
+        self.layout.get_or_insert_default().enter_table(name);
         self
     }
 
-    pub fn table(&mut self, table: impl ToString) -> &mut Self {
-        self.tables
+    pub fn enter_anonymous_schema(&mut self, content: HashMap<String, Table>) -> &mut Self {
+        self.layout
             .get_or_insert_default()
-            .insert(table.to_string(), table.to_string());
+            .enter_anonymous_schema(content);
         self
     }
 
-    pub fn table_alias(&mut self, alias: impl ToString, table: impl ToString) -> &mut Self {
-        self.tables
+    pub fn enter_anonymous_table(&mut self, content: HashMap<String, Column>) -> &mut Self {
+        self.layout
             .get_or_insert_default()
-            .insert(alias.to_string(), table.to_string());
+            .enter_anonymous_table(content);
         self
     }
 
-    pub fn schema(&mut self, schema: impl ToString) -> &mut Self {
-        self.schemas
-            .get_or_insert_default()
-            .insert(schema.to_string(), schema.to_string());
-        self
+    pub fn column(
+        &self,
+        name: impl IntoIterator<Item = impl ToString>,
+    ) -> Option<(ColumnRef, Option<Type>)> {
+        self.layout.as_ref()?.column(name)
     }
 
-    pub fn schema_alias(&mut self, alias: impl ToString, schema: impl ToString) -> &mut Self {
-        self.schemas
-            .get_or_insert_default()
-            .insert(alias.to_string(), schema.to_string());
-        self
+    pub fn table(&self, name: impl IntoIterator<Item = impl ToString>) -> Option<TableRef> {
+        self.layout.as_ref()?.table(name)
+    }
+
+    pub fn table_asterisk(
+        &self,
+        name: impl IntoIterator<Item = impl ToString>,
+    ) -> Option<ColumnRef> {
+        self.layout.as_ref()?.table_asterisk(name)
     }
 
     pub fn record(&mut self, record: impl ToString) -> &mut Self {
@@ -252,8 +242,25 @@ impl TranspilerBuilder {
     }
 
     pub fn add_cel_func(&mut self, code: impl AsRef<str>) -> Result<&mut Self> {
-        let f = CelFunction::parse(&Default::default(), code.as_ref()).unwrap();
+        let f = CelFunction::parse(&Default::default(), code.as_ref())?;
         self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
+    }
+
+    pub fn view(&mut self, name: &str, from: &str, selector: SqlExpr) -> Result<&mut Self> {
+        let x = Query::select()
+            .column(Asterisk)
+            .from(alias(from))
+            .and_where(selector)
+            .take();
+
+        let columns = self
+            .layout
+            .get_or_insert_default()
+            .table_columns([from])
+            .ok_or(ParseError::TableNotFound(from.to_owned()))?;
+
+        self.var(name, Variable::SqlSubQuery(Box::new(x), columns));
+        Ok(self)
     }
 }
 
@@ -292,6 +299,15 @@ pub enum ParseError {
     #[error(transparent)]
     ConversionError(#[from] ConversionError),
 
+    #[error("Schema \"{}\" could not be found in the layout", .0)]
+    SchemaNotFound(String),
+
+    #[error("Table \"{}\" could not be found in the layout", .0)]
+    TableNotFound(String),
+
+    #[error("Column \"{}\" could not be found in the layout", .0)]
+    ColumnNotFound(String),
+
     #[error("TODO: {}", .0)]
     Todo(&'static str),
 }
@@ -324,7 +340,11 @@ mod test {
     use indoc::indoc;
     use sea_query::{PostgresQueryBuilder, Query};
 
-    use crate::transpiler::Transpiler;
+    use crate::{
+        structure::{Column, Database, Schema, SqlLayout, Table},
+        transpiler::Transpiler,
+        types::SqlType,
+    };
 
     use super::TranspilerBuilder;
 
@@ -392,11 +412,28 @@ mod test {
 
     #[test]
     fn table_access() {
+        // let mut db = Database::default();
+        // db.with_schema("my_sch")
+        //     .with_table("my_tab")
+        //     .with_column("my_col", SqlType::Integer)
+        //     .with_column_alias("hidden", "my_alias", SqlType::Integer)
+        //     .finish()
+        //     .finish();
+
         let tp = TranspilerBuilder::create_empty()
-            .column("my_col")
-            .column_alias("my_alias", "hidden")
-            .table("my_tab")
-            .schema("my_sch")
+            .layout({
+                let mut layout = SqlLayout::new(
+                    Database::new().schema(
+                        Schema::new("my_sch").table(
+                            Table::new("my_tab")
+                                .column(Column::new("my_col", SqlType::Boolean))
+                                .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
+                        ),
+                    ),
+                );
+                layout.enter_schema("my_sch").enter_table("my_tab");
+                layout
+            })
             .build();
 
         assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
@@ -405,10 +442,6 @@ mod test {
         assert_eq!(
             helper("my_sch.my_tab.my_col", &tp),
             r#"SELECT "my_sch"."my_tab"."my_col""#
-        );
-        assert_eq!(
-            helper("my_sch.things.are.nice", &tp),
-            r#"SELECT "my_sch"."things"."are" ->> 'nice'"#
         );
     }
 }

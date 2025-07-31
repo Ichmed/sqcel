@@ -3,10 +3,10 @@ use crate::{
     Result, Transpiler,
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
     transpiler::ParseError,
-    types::{Type, TypedExpression},
+    types::{SqlType, Type, TypedExpression},
     variables::Variable,
 };
-use std::fmt::Debug;
+use std::{fmt::Debug, str::FromStr};
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Signature {
@@ -35,13 +35,12 @@ impl ToSql for DynFunc {
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
         self.f.insert(tp, self.rec.as_ref(), self.args.as_slice())
     }
-}
-
-impl Function for DynFunc {
-    fn returntype(&self) -> Type {
+    fn returntype(&self, _tp: &Transpiler) -> Type {
         self.rt.clone().unwrap_or_default()
     }
 }
+
+impl Function for DynFunc {}
 
 #[derive(Debug)]
 pub struct CelFunction {
@@ -100,12 +99,18 @@ impl CelFunction {
 
         let (ty, code) = rest.split_once(":").ok_or(ParseError::Todo("No colon"))?;
 
+        let ty = ty.trim();
+
         Ok(Self {
             code: cel_parser::parse(code)?.to_sqcel(tp)?,
             name: name.to_string(),
             method,
             args,
-            rt: None,
+            rt: Some(
+                SqlType::from_str(ty)
+                    .map_err(|_| ParseError::Todo("Unknown type"))?
+                    .into(),
+            ),
         })
     }
 }
@@ -123,7 +128,7 @@ mod test {
 
     #[test]
     fn use_identitiy() {
-        let f = CelFunction::parse(&Default::default(), "identity(a) -> any: a").unwrap();
+        let f = CelFunction::parse(&Default::default(), "identity(a) -> _: a").unwrap();
 
         let result = crate::hacks::get_plaintext_expression(
             "identity(1)",
@@ -133,8 +138,7 @@ mod test {
                 .build(),
             PostgresQueryBuilder,
         )
-        .unwrap()
-        .0;
+        .unwrap();
 
         assert_eq!(result, "1");
     }
@@ -150,8 +154,7 @@ mod test {
                 .build(),
             PostgresQueryBuilder,
         )
-        .unwrap()
-        .0;
+        .unwrap();
         assert_eq!(result, "1 + 2");
     }
 }

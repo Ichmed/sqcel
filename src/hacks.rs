@@ -6,13 +6,16 @@ pub fn get_plaintext_expression(
     code: &str,
     tp: &Transpiler,
     builder: impl QueryBuilder,
-) -> Result<(String, Vec<String>)> {
-    let (sql, params) = Query::select().expr(tp.transpile(code)?).build(builder);
+) -> Result<String> {
+    let sql = Query::select().expr(tp.transpile(code)?).to_string(builder);
     let sql = sql.strip_prefix("SELECT ").unwrap().to_owned();
-    let params = params.into_iter().map(|v| v.to_string()).collect();
-    Ok((sql, params))
+    Ok(sql)
 }
 
 pub fn postgres(code: &str) -> Result<String> {
-    Ok(get_plaintext_expression(code, &Transpiler::default(), PostgresQueryBuilder)?.0)
+    get_plaintext_expression(
+        code,
+        &Transpiler::new().reduce(true).build(),
+        PostgresQueryBuilder,
+    )
 }

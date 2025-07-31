@@ -9,22 +9,20 @@ use std::{any::Any, fmt::Display};
 
 use crate::{
     Transpiler,
+    functions::slice::First,
     intermediate::{Expression, ExpressionInner, Rc, ToSql},
-    magic::x,
     transpiler::{ParseError, Result, alias},
     types::{SqlType, Type, TypedExpression},
 };
 use count::Count;
 use dyn_fn::{DynFunc, Signature};
-use last::Last;
+use last::Latest;
 use list_oper::{all, any};
 use map::Map;
 
 use sea_query::{Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement};
 
-pub trait Function: ToSql + Any + Send + Sync {
-    fn returntype(&self) -> Type;
-}
+pub trait Function: ToSql + Any + Send + Sync {}
 
 pub fn get(
     tp: &Transpiler,
@@ -59,20 +57,16 @@ pub fn get(
                     Err(WrongFunctionArgs::given("double", rec, args).allowed(false, 1))?
                 }
 
-                ("time", None, [x]) => cast(
-                    "timestamp with time zone",
-                    Type::Sql(SqlType::TimeNoZone),
-                    x,
-                    tp,
-                )?,
+                ("time", None, [x]) => {
+                    cast("timestamp with time zone", Type::Sql(SqlType::Time), x, tp)?
+                }
                 ("time", _, _) => {
                     Err(WrongFunctionArgs::given("time", rec, args).allowed(false, 1))?
                 }
 
-                // ("first", Some(list), []) => First::new(list)?,
-                // ("first", None, [list]) => First::new(list)?,
-                ("count", None, [x]) => Count::new(x)?,
-                ("count", Some(x), []) => Count::new(x)?,
+                ("first", Some(list), []) => First::new(list)?,
+                ("first", None, [list]) => First::new(list)?,
+                ("count", Some(x), agg) => Count::new(x, agg)?,
                 ("count", _, _) => Err(WrongFunctionArgs::given("count", rec, args)
                     .allowed(false, 1)
                     .allowed(true, 0))?,
@@ -89,31 +83,19 @@ pub fn get(
                     Err(WrongFunctionArgs::given("filter", rec, args).allowed(true, 2))?
                 }
 
-                ("last", None, [amount]) => Last::new(Some(amount), None)?,
-                ("last", None, [amount, predicate]) => Last::new(Some(amount), Some(predicate))?,
-                ("last", _, _) => Err(WrongFunctionArgs::given("last", rec, args)
+                ("latest", None, [amount]) => Latest::new(Some(amount), None)?,
+                ("latest", None, [amount, pred]) => Latest::new(Some(amount), Some(pred))?,
+                ("latest", _, _) => Err(WrongFunctionArgs::given("latest", rec, args)
                     .allowed(false, 1)
                     .allowed(false, 2))?,
 
-                ("all", None, [list]) => all(list, &x(), &x())?,
-                ("all", Some(list), []) => all(list, &x(), &x())?,
                 ("all", Some(list), [var, predicate]) => all(list, var, predicate)?,
-                ("all", None, [list, var, predicate]) => all(list, var, predicate)?,
-                ("all", _, _) => Err(WrongFunctionArgs::given("all", rec, args)
-                    .allowed(true, 0)
-                    .allowed(true, 2)
-                    .allowed(false, 1)
-                    .allowed(false, 3))?,
+                ("all", _, _) => Err(WrongFunctionArgs::given("all", rec, args).allowed(true, 2))?,
 
-                ("any", None, [list]) => any(list, &x(), &x())?,
-                ("any", Some(list), []) => any(list, &x(), &x())?,
-                ("any", Some(list), [var, predicate]) => any(list, var, predicate)?,
-                ("any", None, [list, var, predicate]) => any(list, var, predicate)?,
-                ("any", _, _) => Err(WrongFunctionArgs::given("any", rec, args)
-                    .allowed(true, 0)
-                    .allowed(true, 2)
-                    .allowed(false, 1)
-                    .allowed(false, 3))?,
+                ("exists", Some(list), [var, predicate]) => any(list, var, predicate)?,
+                ("exists", _, _) => {
+                    Err(WrongFunctionArgs::given("exists", rec, args).allowed(true, 2))?
+                }
 
                 (name, _, _) => get_dynamic_function(tp, name, rec, args)?,
             },
@@ -203,11 +185,7 @@ impl Display for WrongFunctionArgs {
 }
 
 struct Cast(Expression, &'static str, Type);
-impl Function for Cast {
-    fn returntype(&self) -> Type {
-        self.2.clone()
-    }
-}
+impl Function for Cast {}
 
 impl ToSql for Cast {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
@@ -215,6 +193,9 @@ impl ToSql for Cast {
             ty: self.2.clone(),
             expr: self.0.to_sql(tp)?.expr.cast_as(alias(self.1)),
         })
+    }
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        self.2.clone()
     }
 }
 
@@ -227,7 +208,9 @@ pub fn to_select(expr: SqlExpression) -> SelectStatement {
     match expr {
         SqlExpression::SubQuery(_, boxed) => match *boxed {
             SubQueryStatement::SelectStatement(select_statement) => select_statement,
-            _ => todo!(),
+            _ => unimplemented!(
+                "SQCEL should never generate a statement that is not a select statement"
+            ),
         },
         x => Query::select().expr(x).take(),
     }

@@ -1,21 +1,24 @@
-use super::{Function, subquery};
+use sea_query::Query;
+
+use super::Function;
 use crate::{
+    Transpiler,
+    functions::subquery,
     intermediate::{Expression, Rc, ToSql},
     magic::{here, we},
-    transpiler::{ParseError, Result, alias},
-    types::{Type, TypedExpression},
+    transpiler::{ParseError, Result},
+    types::{RecordSet, Type, TypedExpression},
 };
-use sea_query::{ColumnRef, Query};
 
 /// Returns the last `n` / all previous records that
 /// fullfill some predicate
 #[derive(Default)]
-pub struct Last {
+pub struct Latest {
     amount: Option<u64>,
     predicate: Option<Expression>,
 }
 
-impl Last {
+impl Latest {
     pub fn new(amount: Option<&Expression>, predicate: Option<&Expression>) -> Result<Rc<Self>> {
         let amount = amount.map(Expression::as_postive_integer).transpose()?;
         Ok(Rc::new(Self {
@@ -25,22 +28,23 @@ impl Last {
     }
 }
 
-impl Function for Last {
-    fn returntype(&self) -> Type {
-        Type::RecordSet
-    }
-}
+impl Function for Latest {}
 
-impl ToSql for Last {
+impl ToSql for Latest {
+    fn returntype(&self, _tp: &Transpiler) -> Type {
+        RecordSet(Default::default(), true).into()
+    }
+
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
         let mut q = Query::select();
 
         let time = tp
-            .columns
-            .get("time")
-            .ok_or(ParseError::Todo("No time column set"))?;
+            .layout
+            .column(["time"])
+            .ok_or(ParseError::Todo("No time column set"))?
+            .0;
 
-        q.order_by(ColumnRef::Column(alias(time)), sea_query::Order::Desc);
+        q.order_by(time, sea_query::Order::Desc);
 
         if let Some(predicate) = self.predicate.as_ref() {
             q.expr(here().to_sql(tp)?.expr);

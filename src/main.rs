@@ -2,12 +2,15 @@ pub mod functions;
 pub mod hacks;
 pub mod intermediate;
 pub mod magic;
+pub mod structure;
 pub mod transpiler;
 pub mod types;
 pub mod variables;
 
 use crate::transpiler::Transpiler;
 use clap::Parser;
+use miette::IntoDiagnostic;
+use miette::miette;
 use sqcel::PostgresQueryBuilder;
 use std::{io::BufRead, path::PathBuf};
 use variables::Variable;
@@ -51,16 +54,17 @@ struct Cli {
 }
 
 impl Cli {
-    fn into_transpiler(self) -> Result<Transpiler> {
+    fn into_transpiler(self) -> miette::Result<Transpiler> {
         let Self {
             variables,
-            columns,
-            tables,
-            schemas,
+            // columns,
+            // tables,
+            // schemas,
             types,
             accept_unknown_types,
             trigger_mode,
             no_reduce,
+            ..
         } = self;
 
         let variables = variables
@@ -77,32 +81,32 @@ impl Cli {
                 )
             });
 
-        let columns = columns
-            .into_iter()
-            .map(|v| {
-                v.split_once(":")
-                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                    .unwrap_or((v.clone(), v))
-            })
-            .collect();
+        // let columns = columns
+        //     .into_iter()
+        //     .map(|v| {
+        //         v.split_once(":")
+        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        //             .unwrap_or((v.clone(), v))
+        //     })
+        //     .collect();
 
-        let tables = tables
-            .into_iter()
-            .map(|v| {
-                v.split_once(":")
-                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                    .unwrap_or((v.clone(), v))
-            })
-            .collect();
+        // let tables = tables
+        //     .into_iter()
+        //     .map(|v| {
+        //         v.split_once(":")
+        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        //             .unwrap_or((v.clone(), v))
+        //     })
+        //     .collect();
 
-        let schemas = schemas
-            .into_iter()
-            .map(|v| {
-                v.split_once(":")
-                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                    .unwrap_or((v.clone(), v))
-            })
-            .collect();
+        // let schemas = schemas
+        //     .into_iter()
+        //     .map(|v| {
+        //         v.split_once(":")
+        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        //             .unwrap_or((v.clone(), v))
+        //     })
+        //     .collect();
 
         let types = if !types.is_empty() {
             let mut parser = protobuf_parse::Parser::new();
@@ -112,7 +116,7 @@ impl Cli {
             }
             parser
                 .parse_and_typecheck()
-                .unwrap()
+                .map_err(|e| miette!("{e:?}"))?
                 .file_descriptors
                 .remove(0)
                 .message_type
@@ -124,9 +128,6 @@ impl Cli {
         };
 
         Ok(Transpiler {
-            columns,
-            tables,
-            schemas,
             types,
             accept_unknown_types,
             trigger_mode,
@@ -144,19 +145,13 @@ impl Cli {
 fn main() -> miette::Result<()> {
     let transpiler = Cli::parse().into_transpiler()?;
     for line in std::io::stdin().lock().lines() {
-        let line = line.unwrap();
+        let line = line.into_diagnostic()?;
         if line.is_empty() {
             continue;
         }
         match hacks::get_plaintext_expression(&line, &transpiler, PostgresQueryBuilder) {
-            Ok((sql, params)) => {
+            Ok(sql) => {
                 println!("{sql}");
-                if !params.is_empty() {
-                    println!();
-                    for v in params {
-                        println!("{}", v)
-                    }
-                }
                 println!();
             }
             Err(err) => {

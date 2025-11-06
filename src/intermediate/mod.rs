@@ -604,6 +604,7 @@ impl Expression {
                 TypedExpression {
                     ty: Type::Unknown,
                     expr: match inner.expr {
+                        // Chane ->> to -> for inner expression
                         SimpleExpr::Binary(a, op, b) if op == PgBinOper::CastJsonField.into() => {
                             a.get_json_field(*b)
                         }
@@ -612,7 +613,27 @@ impl Expression {
                     .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(*index)))),
                 }
             }
-            _ => return Err(Error::Todo("Can't index this")),
+            ExpressionInner::Access(acc) => {
+                let inner = acc.to_sql(tp)?;
+                TypedExpression {
+                    ty: Type::Unknown,
+                    expr: match inner.expr {
+                        // Chane ->> to -> for inner expression
+                        SimpleExpr::Binary(a, op, b) if op == PgBinOper::CastJsonField.into() => {
+                            a.get_json_field(*b)
+                        }
+                        x => x,
+                    }
+                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
+                }
+            }
+            _ => TypedExpression {
+                ty: Type::Unknown,
+                expr: ex
+                    .to_sql(tp)?
+                    .expr
+                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
+            },
         })
     }
 

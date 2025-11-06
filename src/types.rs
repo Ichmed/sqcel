@@ -191,6 +191,10 @@ impl TypeConversion for JsonType {
                 expr: simple_func("to_json", simple_func("array", expr.expr)),
                 ty: Self::List.into(),
             }),
+            (Type::Unknown, Self::Any) => Ok(TypedExpression {
+                expr: expr.expr.cast_as(alias("json")),
+                ty: Type::Json(JsonType::Any),
+            }),
             (a, b) => Err(ConversionError::UnimplementedConvertion(
                 a.clone(),
                 Type::Json(b.clone()),

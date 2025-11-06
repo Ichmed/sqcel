@@ -192,6 +192,12 @@ good!(string_literal "\"foobar\"" == "foobar");
 // Weird bug in postgres_serde
 good!(float_32 "1.1" == 1.1);
 
+// --- Arrays
+good!(
+    simple_index_array r#"[1, 2, 3][1]"# == 2;
+    nested_index_array r#"{"a": [1, 2, 3]}.a[1]"# == 2
+);
+
 // --- Objects
 
 good!(extract_int r#"int({"foo": 1}.foo)"# == 1);

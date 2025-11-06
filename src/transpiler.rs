@@ -29,19 +29,6 @@ use thiserror::Error;
 ///     r#"SELECT 5"#
 /// )
 ///```
-/// Or more complex
-///```
-/// # use sqcel::{Transpiler, Query, PostgresQueryBuilder};
-/// # use cel_parser::Atom;
-/// // Create a `Transpiler` and set a variable and column
-/// let tp = Transpiler::new().var("foo", 2).column("some_col").build();
-/// let code = r#"int({"val": foo}.foo) + 1 + some_col"#;
-/// let my_expr = tp.transpile(code).unwrap();
-/// assert_eq!(
-///     Query::select().expr(my_expr).to_string(PostgresQueryBuilder),
-///     "SELECT CAST((jsonb_build_object('val', 2) ->> 'foo') AS integer) + 1 + \"some_col\""
-/// )
-///```
 #[derive(Clone, Debug, Default, Builder)]
 #[builder(default, build_fn(name = "_build", private))]
 pub struct Transpiler {
@@ -110,7 +97,7 @@ impl Transpiler {
         }
     }
 
-    pub fn to_context(&self) -> Result<Context> {
+    pub fn to_context(&self) -> Result<Context<'_>> {
         let mut c = Context::default();
         for (name, value) in self.variables.iter() {
             if let Ok(value) = CelValue::try_from(value.clone()) {

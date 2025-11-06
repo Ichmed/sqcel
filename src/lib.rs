@@ -9,14 +9,3 @@ pub mod intermediate;
 pub mod magic;
 pub mod types;
 pub mod variables;
-
-#[cfg(test)]
-mod test {
-    use sea_query::{Expr, PostgresQueryBuilder};
-
-    use crate::{
-        Transpiler, hacks,
-        structure::{Database, Schema, SqlLayout, Table},
-        types::SqlType,
-    };
-}

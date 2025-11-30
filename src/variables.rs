@@ -118,8 +118,8 @@ impl ToSql for Object {
 impl ToSql for Variable {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         Ok(match self {
-            Variable::Object(o) => o.to_sql(tp)?,
-            Variable::List(variables) => TypedExpression {
+            Self::Object(o) => o.to_sql(tp)?,
+            Self::List(variables) => TypedExpression {
                 ty: JsonType::List.into(),
                 expr: SimpleExpr::FunctionCall(
                     Func::cust(Alias::new("jsonb_build_array")).args(
@@ -130,11 +130,11 @@ impl ToSql for Variable {
                     ),
                 ),
             },
-            Variable::Atom(atom) => atom.to_sql(tp)?,
+            Self::Atom(atom) => atom.to_sql(tp)?,
 
-            Variable::SqlSubQuery(select_statement, _)
-            | Variable::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
-            Variable::SqlAny(simple_expr) => TypedExpression {
+            Self::SqlSubQuery(select_statement, _)
+            | Self::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
+            Self::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),
             },
@@ -143,26 +143,26 @@ impl ToSql for Variable {
 
     fn returntype(&self, tp: &Transpiler) -> Type {
         match self {
-            Variable::Object(_) => JsonType::Map.into(),
-            Variable::List(_) => JsonType::List.into(),
-            Variable::Atom(atom) => atom.returntype(tp),
-            Variable::SqlSubQuery(_, cols) | Variable::SqlSubQueryAtom(_, cols) => {
+            Self::Object(_) => JsonType::Map.into(),
+            Self::List(_) => JsonType::List.into(),
+            Self::Atom(atom) => atom.returntype(tp),
+            Self::SqlSubQuery(_, cols) | Self::SqlSubQueryAtom(_, cols) => {
                 Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
             }
-            Variable::SqlAny(_) => Type::Unknown,
+            Self::SqlAny(_) => Type::Unknown,
         }
     }
 }
 
 impl Variable {
     #[must_use]
-    pub fn is_object(&self) -> bool {
+    pub const fn is_object(&self) -> bool {
         matches!(self, Self::Object { .. })
     }
 
     pub fn as_postive_integer(&self) -> Result<u64> {
         match self {
-            Variable::Atom(atom) => atom.as_positive_integer(),
+            Self::Atom(atom) => atom.as_positive_integer(),
             _ => Err(ParseError::Todo("Must be an integer")),
         }
     }
@@ -170,12 +170,12 @@ impl Variable {
     /// Turn this into a recordset
     pub fn to_record_set(&self, tp: &Transpiler, a: &str) -> Result<SelectStatement> {
         Ok(match self {
-            Variable::SqlSubQuery(select_statement, _) => *select_statement.clone(),
-            Variable::List(content) if content.iter().all(Expression::is_object) => {
+            Self::SqlSubQuery(select_statement, _) => *select_statement.clone(),
+            Self::List(content) if content.iter().all(Expression::is_object) => {
                 todo!("populate_record_set")
             }
 
-            Variable::List(_) => Query::select()
+            Self::List(_) => Query::select()
                 .expr_as(
                     Func::cust(alias("jsonb_array_elements")).arg(self.to_sql(tp)?.expr),
                     alias(a),
@@ -188,7 +188,7 @@ impl Variable {
     /// Turn this into a select query
     pub fn to_select(&self, tp: &Transpiler) -> Result<SelectStatement> {
         Ok(match self {
-            Variable::SqlSubQuery(select_statement, _) => *select_statement.clone(),
+            Self::SqlSubQuery(select_statement, _) => *select_statement.clone(),
             other => Query::select().expr(other.to_sql(tp)?.expr).take(),
         })
     }
@@ -214,10 +214,10 @@ pub enum Atom {
 impl Atom {
     fn as_positive_integer(&self) -> Result<u64> {
         match self {
-            Atom::Int(i) => (*i)
+            Self::Int(i) => (*i)
                 .try_into()
                 .map_err(|_| ParseError::Todo("Must be positive")),
-            Atom::UInt(u) => Ok(*u),
+            Self::UInt(u) => Ok(*u),
             _ => Err(ParseError::Todo("Must be an integer")),
         }
     }

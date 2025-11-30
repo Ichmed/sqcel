@@ -45,7 +45,9 @@ tokio-postgres = { version = "0.7.13", features = [
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 
 # Nice to allow so we can swap out private data structures more easily
 default_trait_access = "allow"
 missing_errors_doc = "allow"
+option_if_let_else = "allow"

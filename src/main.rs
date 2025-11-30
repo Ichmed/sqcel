@@ -69,16 +69,19 @@ impl Cli {
             .map(|v| {
                 v.split_once(':')
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                    .ok_or(miette!("key:value pairs must contain a colon"))
+                    .ok_or_else(|| miette!("key:value pairs must contain a colon"))
             })
             .collect::<miette::Result<Vec<_>>>()?
             .into_iter()
             .map(|(k, v)| {
-                (
+                Ok((
                     k,
-                    Variable::from(serde_json::from_str::<serde_json::Value>(&v).unwrap()),
-                )
-            });
+                    Variable::from(
+                        serde_json::from_str::<serde_json::Value>(&v).into_diagnostic()?,
+                    ),
+                ))
+            })
+            .collect::<miette::Result<Vec<_>>>()?;
 
         let types = if types.is_empty() {
             Default::default()

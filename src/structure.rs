@@ -130,7 +130,7 @@ impl Column {
 
 impl<T: ToString> From<(T, SqlType)> for Column {
     fn from((name, ty): (T, SqlType)) -> Self {
-        Column::new(name.to_string(), ty)
+        Self::new(name.to_string(), ty)
     }
 }
 
@@ -150,7 +150,7 @@ impl SqlLayout {
         self
     }
 
-    pub fn enter_anonymous_schema(&mut self, layout: HashMap<String, Table>) -> &mut SqlLayout {
+    pub fn enter_anonymous_schema(&mut self, layout: HashMap<String, Table>) -> &mut Self {
         self.schema = Some(Schema {
             layout,
             name: "__anonymous__".to_owned(),
@@ -158,7 +158,7 @@ impl SqlLayout {
         self
     }
 
-    pub fn enter_anonymous_table(&mut self, layout: HashMap<String, Column>) -> &mut SqlLayout {
+    pub fn enter_anonymous_table(&mut self, layout: HashMap<String, Column>) -> &mut Self {
         self.table = Some(Table {
             layout,
             name: "__anonymous__".to_owned(),

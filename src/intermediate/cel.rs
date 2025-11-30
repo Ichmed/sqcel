@@ -47,22 +47,22 @@ impl ToIntermediate for CelExpression {
         }
 
         Ok(match self {
-            CelExpression::Arithmetic(a, op, b) => {
+            Self::Arithmetic(a, op, b) => {
                 ExpressionInner::Arithmetic(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
             }
-            CelExpression::Relation(a, op, b) => {
+            Self::Relation(a, op, b) => {
                 ExpressionInner::Relation(box_ex!(tp, a), op.clone(), box_ex!(tp, b))
             }
-            CelExpression::Ternary(a, b, c) => {
+            Self::Ternary(a, b, c) => {
                 ExpressionInner::Ternary(box_ex!(tp, a), box_ex!(tp, b), box_ex!(tp, c))
             }
-            CelExpression::Or(a, b) => ExpressionInner::Or(box_ex!(tp, a), box_ex!(tp, b)),
-            CelExpression::And(a, b) => ExpressionInner::And(box_ex!(tp, a), box_ex!(tp, b)),
-            CelExpression::Unary(unary_op, e) => {
+            Self::Or(a, b) => ExpressionInner::Or(box_ex!(tp, a), box_ex!(tp, b)),
+            Self::And(a, b) => ExpressionInner::And(box_ex!(tp, a), box_ex!(tp, b)),
+            Self::Unary(unary_op, e) => {
                 ExpressionInner::Unary(unary_op.clone(), box_ex!(tp, e))
             }
-            CelExpression::Member(expression, member) => resolve_member(tp, expression, member)?,
-            CelExpression::FunctionCall(name, rec, args) => {
+            Self::Member(expression, member) => resolve_member(tp, expression, member)?,
+            Self::FunctionCall(name, rec, args) => {
                 ExpressionInner::FunctionCall(functions::get(
                     tp,
                     &name.to_sqcel(tp)?,
@@ -72,20 +72,20 @@ impl ToIntermediate for CelExpression {
                         .collect::<Result<_>>()?,
                 )?)
             }
-            CelExpression::List(expressions) => ExpressionInner::Variable(Variable::List(
+            Self::List(expressions) => ExpressionInner::Variable(Variable::List(
                 expressions
                     .iter()
                     .map(|x| x.to_sqcel(tp))
                     .collect::<Result<_>>()?,
             )),
-            CelExpression::Map(items) => ExpressionInner::Variable(Variable::Object(Object {
+            Self::Map(items) => ExpressionInner::Variable(Variable::Object(Object {
                 data: items
                     .iter()
                     .map(|(k, v)| Ok((k.to_sqcel(tp)?, v.to_sqcel(tp)?)))
                     .collect::<Result<_>>()?,
                 schema: None,
             })),
-            CelExpression::Atom(atom) => ExpressionInner::Variable(Variable::Atom(match atom {
+            Self::Atom(atom) => ExpressionInner::Variable(Variable::Atom(match atom {
                 CelAtom::Int(i) => Atom::Int(*i),
                 CelAtom::UInt(u) => Atom::UInt(*u),
                 CelAtom::Float(f) => Atom::Float(*f),
@@ -94,7 +94,7 @@ impl ToIntermediate for CelExpression {
                 CelAtom::Bool(b) => Atom::Bool(*b),
                 CelAtom::Null => Atom::Null,
             })),
-            CelExpression::Ident(i) => {
+            Self::Ident(i) => {
                 ExpressionInner::Access(AccessChain::new(vec![Ident(i.clone())]))
             }
         }
@@ -158,13 +158,13 @@ fn resolve_member(
 impl ToIntermediate for CelValue {
     fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression> {
         Ok(ExpressionInner::Variable(match self {
-            CelValue::List(values) => Variable::List(
+            Self::List(values) => Variable::List(
                 values
                     .iter()
                     .map(|x| x.to_sqcel(tp))
                     .collect::<Result<_>>()?,
             ),
-            CelValue::Map(map) => Variable::Object(Object {
+            Self::Map(map) => Variable::Object(Object {
                 data: map
                     .map
                     .iter()
@@ -172,14 +172,14 @@ impl ToIntermediate for CelValue {
                     .collect::<Result<_>>()?,
                 schema: None,
             }),
-            CelValue::Int(i) => Variable::Atom(Atom::Int(*i)),
-            CelValue::UInt(u) => Variable::Atom(Atom::UInt(*u)),
-            CelValue::Float(f) => Variable::Atom(Atom::Float(*f)),
-            CelValue::String(s) => Variable::Atom(Atom::String(s.clone())),
-            CelValue::Bytes(items) => Variable::Atom(Atom::Bytes(items.clone())),
-            CelValue::Bool(b) => Variable::Atom(Atom::Bool(*b)),
-            CelValue::Null => Variable::Atom(Atom::Null),
-            CelValue::Function(_, _) => {
+            Self::Int(i) => Variable::Atom(Atom::Int(*i)),
+            Self::UInt(u) => Variable::Atom(Atom::UInt(*u)),
+            Self::Float(f) => Variable::Atom(Atom::Float(*f)),
+            Self::String(s) => Variable::Atom(Atom::String(s.clone())),
+            Self::Bytes(items) => Variable::Atom(Atom::Bytes(items.clone())),
+            Self::Bool(b) => Variable::Atom(Atom::Bool(*b)),
+            Self::Null => Variable::Atom(Atom::Null),
+            Self::Function(_, _) => {
                 return Err(ParseError::Todo("Function pointers are not supported"));
             }
         })
@@ -190,10 +190,10 @@ impl ToIntermediate for CelValue {
 impl ToIntermediate for Key {
     fn to_sqcel(&self, _tp: &Transpiler) -> Result<Expression> {
         Ok(match self {
-            Key::Int(i) => ExpressionInner::Variable(Variable::Atom(Atom::Int(*i))),
-            Key::Uint(u) => ExpressionInner::Variable(Variable::Atom(Atom::UInt(*u))),
-            Key::Bool(b) => ExpressionInner::Variable(Variable::Atom(Atom::Bool(*b))),
-            Key::String(s) => ExpressionInner::Variable(Variable::Atom(Atom::String(s.clone()))),
+            Self::Int(i) => ExpressionInner::Variable(Variable::Atom(Atom::Int(*i))),
+            Self::Uint(u) => ExpressionInner::Variable(Variable::Atom(Atom::UInt(*u))),
+            Self::Bool(b) => ExpressionInner::Variable(Variable::Atom(Atom::Bool(*b))),
+            Self::String(s) => ExpressionInner::Variable(Variable::Atom(Atom::String(s.clone()))),
         }
         .into_anonymous())
     }

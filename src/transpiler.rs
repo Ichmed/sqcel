@@ -76,7 +76,7 @@ impl Transpiler {
 
     #[must_use]
     pub fn to_builder(&self) -> TranspilerBuilder {
-        let Transpiler {
+        let Self {
             variables,
             records,
 
@@ -145,7 +145,7 @@ impl TranspilerBuilder {
         self
     }
 
-    pub fn build(&mut self) -> Result<Transpiler> {
+    pub fn build(&self) -> Result<Transpiler> {
         Ok(self._build()?)
     }
 
@@ -263,7 +263,7 @@ impl TranspilerBuilder {
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
-pub(crate) fn alias(s: impl ToString) -> DynIden {
+pub fn alias(s: impl ToString) -> DynIden {
     SeaRc::new(Alias::new(s.to_string()))
 }
 
@@ -328,7 +328,7 @@ impl Diagnostic for CelParseError {
 
 impl From<cel_parser::ParseError> for ParseError {
     fn from(value: cel_parser::ParseError) -> Self {
-        ParseError::CelError(CelParseError(value))
+        Self::CelError(CelParseError(value))
     }
 }
 

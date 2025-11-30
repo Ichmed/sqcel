@@ -124,31 +124,31 @@ type Error = ParseError;
 impl ToSql for Atom {
     fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
         Ok(match self {
-            Atom::Null => TypedExpression {
+            Self::Null => TypedExpression {
                 expr: SimpleExpr::Constant(Value::Json(None)),
                 ty: Type::Null,
             },
-            Atom::Bool(b) => TypedExpression {
+            Self::Bool(b) => TypedExpression {
                 ty: Type::Sql(SqlType::Boolean),
                 expr: SimpleExpr::Constant(Value::Bool(Some(*b))),
             },
-            Atom::String(s) => TypedExpression {
+            Self::String(s) => TypedExpression {
                 ty: Type::Sql(SqlType::String),
                 expr: SimpleExpr::Constant(Value::String(Some(Box::new(s.to_string())))),
             },
-            Atom::Bytes(b) => TypedExpression {
+            Self::Bytes(b) => TypedExpression {
                 ty: Type::Sql(SqlType::Bytes),
                 expr: SimpleExpr::Constant(Value::Bytes(Some(Box::new(b.as_ref().clone())))),
             },
-            Atom::Int(i) => TypedExpression {
+            Self::Int(i) => TypedExpression {
                 ty: Type::Sql(SqlType::Integer),
                 expr: SimpleExpr::Constant(Value::BigInt(Some(*i))),
             },
-            Atom::UInt(u) => TypedExpression {
+            Self::UInt(u) => TypedExpression {
                 ty: Type::Sql(SqlType::UInteger),
                 expr: SimpleExpr::Constant(Value::BigUnsigned(Some(*u))),
             },
-            Atom::Float(f) => TypedExpression {
+            Self::Float(f) => TypedExpression {
                 ty: Type::Sql(SqlType::Float),
                 expr: SimpleExpr::Constant(Value::Double(Some(*f))),
             },
@@ -157,13 +157,13 @@ impl ToSql for Atom {
 
     fn returntype(&self, _tp: &Transpiler) -> Type {
         match self {
-            Atom::Null => Type::Null,
-            Atom::Bool(_) => SqlType::Boolean.into(),
-            Atom::String(_) => SqlType::String.into(),
-            Atom::Bytes(_) => SqlType::Bytes.into(),
-            Atom::Int(_) => SqlType::Integer.into(),
-            Atom::UInt(_) => SqlType::UInteger.into(),
-            Atom::Float(_) => SqlType::Float.into(),
+            Self::Null => Type::Null,
+            Self::Bool(_) => SqlType::Boolean.into(),
+            Self::String(_) => SqlType::String.into(),
+            Self::Bytes(_) => SqlType::Bytes.into(),
+            Self::Int(_) => SqlType::Integer.into(),
+            Self::UInt(_) => SqlType::UInteger.into(),
+            Self::Float(_) => SqlType::Float.into(),
         }
     }
 }
@@ -171,19 +171,19 @@ impl ToSql for Atom {
 impl From<serde_json::Value> for Variable {
     fn from(value: serde_json::Value) -> Self {
         match value {
-            serde_json::Value::Null => Variable::Atom(Atom::Null),
-            serde_json::Value::Bool(bool) => Variable::Atom(Atom::Bool(bool)),
+            serde_json::Value::Null => Self::Atom(Atom::Null),
+            serde_json::Value::Bool(bool) => Self::Atom(Atom::Bool(bool)),
             serde_json::Value::Number(number) => {
                 if let Some(i) = number.as_i64() {
-                    Variable::Atom(Atom::Int(i))
+                    Self::Atom(Atom::Int(i))
                 } else if let Some(f) = number.as_f64() {
-                    Variable::Atom(Atom::Float(f))
+                    Self::Atom(Atom::Float(f))
                 } else {
                     unimplemented!("What are you doing here")
                 }
             }
-            serde_json::Value::String(s) => Variable::Atom(Atom::String(s.into())),
-            serde_json::Value::Array(values) => Variable::List(
+            serde_json::Value::String(s) => Self::Atom(Atom::String(s.into())),
+            serde_json::Value::Array(values) => Self::List(
                 values
                     .into_iter()
                     .map(Into::into)
@@ -191,12 +191,12 @@ impl From<serde_json::Value> for Variable {
                     .map(ExpressionInner::into_anonymous)
                     .collect(),
             ),
-            serde_json::Value::Object(map) => Variable::Object(Object {
+            serde_json::Value::Object(map) => Self::Object(Object {
                 data: map
                     .into_iter()
                     .map(|(k, v)| {
                         (
-                            ExpressionInner::Variable(Variable::Atom(Atom::String(k.into())))
+                            ExpressionInner::Variable(Self::Atom(Atom::String(k.into())))
                                 .into_anonymous(),
                             ExpressionInner::Variable(v.into()).into_anonymous(),
                         )
@@ -220,9 +220,9 @@ impl TryFrom<Variable> for Key {
     fn try_from(value: Variable) -> std::result::Result<Self, Self::Error> {
         Ok(match value {
             Variable::Atom(atom) => match atom {
-                Atom::Bool(b) => Key::Bool(b),
-                Atom::String(s) => Key::String(s),
-                Atom::Int(i) => Key::Int(i),
+                Atom::Bool(b) => Self::Bool(b),
+                Atom::String(s) => Self::String(s),
+                Atom::Int(i) => Self::Int(i),
                 _ => return Err(CantBeAValue),
             },
             _ => return Err(CantBeAValue),
@@ -248,14 +248,14 @@ impl TryFrom<Variable> for CelValue {
 
     fn try_from(value: Variable) -> std::result::Result<Self, Self::Error> {
         Ok(match value {
-            Variable::Object(Object { data, .. }) => CelValue::Map(Map {
+            Variable::Object(Object { data, .. }) => Self::Map(Map {
                 map: Arc::new(
                     data.into_iter()
                         .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
                         .collect::<std::result::Result<_, _>>()?,
                 ),
             }),
-            Variable::List(expresions) => CelValue::List(Arc::new(
+            Variable::List(expresions) => Self::List(Arc::new(
                 expresions
                     .into_iter()
                     .map(|v| match &*v.inner {
@@ -265,13 +265,13 @@ impl TryFrom<Variable> for CelValue {
                     .collect::<std::result::Result<_, _>>()?,
             )),
             Variable::Atom(atom) => match atom {
-                Atom::Null => CelValue::Null,
-                Atom::Bool(b) => CelValue::Bool(b),
-                Atom::String(s) => CelValue::String(s),
-                Atom::Bytes(items) => CelValue::Bytes(items.clone()),
-                Atom::Int(i) => CelValue::Int(i),
-                Atom::UInt(u) => CelValue::UInt(u),
-                Atom::Float(f) => CelValue::Float(f),
+                Atom::Null => Self::Null,
+                Atom::Bool(b) => Self::Bool(b),
+                Atom::String(s) => Self::String(s),
+                Atom::Bytes(items) => Self::Bytes(items),
+                Atom::Int(i) => Self::Int(i),
+                Atom::UInt(u) => Self::UInt(u),
+                Atom::Float(f) => Self::Float(f),
             },
             _ => return Err(CantBeAValue),
         })
@@ -340,7 +340,8 @@ impl ToSql for AccessChain {
                         .map(|x| x.as_str().to_owned())
                         .collect::<Vec<_>>()
                         .join("."),
-                    self.to_path().map_or("?".to_owned(), Cow::into_owned),
+                    self.to_path()
+                        .map_or_else(|| "?".to_owned(), Cow::into_owned),
                 ));
             }
         };
@@ -392,7 +393,8 @@ impl ToSql for AccessChain {
                     .map(|x| x.as_str().to_owned())
                     .collect::<Vec<_>>()
                     .join("."),
-                self.to_path().map_or("?".to_owned(), Cow::into_owned),
+                self.to_path()
+                    .map_or_else(|| "?".to_owned(), Cow::into_owned),
             )),
         }
     }
@@ -420,7 +422,7 @@ impl ToSql for AccessChain {
 }
 
 impl AccessChain {
-    fn new(chain: Vec<Ident>) -> Self {
+    const fn new(chain: Vec<Ident>) -> Self {
         Self {
             head: None,
             idents: chain,
@@ -461,7 +463,7 @@ impl AccessChain {
         })
     }
 
-    pub fn as_single_ident(&self) -> Result<&Ident> {
+    pub const fn as_single_ident(&self) -> Result<&Ident> {
         match (self.head.as_ref(), self.idents.as_slice()) {
             (None, [single]) => Ok(single),
             _ => Err(Error::Todo("Invalid var name")),
@@ -559,7 +561,7 @@ impl ToSql for Expression {
 }
 
 impl Expression {
-    fn index(tp: &Transpiler, ex: &Expression, index: i64) -> Result<TypedExpression> {
+    fn index(tp: &Transpiler, ex: &Self, index: i64) -> Result<TypedExpression> {
         Ok(match &*ex.inner {
             ExpressionInner::Variable(variable) => match variable {
                 Variable::List(_) => TypedExpression {

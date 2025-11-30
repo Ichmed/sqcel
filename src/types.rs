@@ -64,7 +64,7 @@ pub enum Type {
 
 impl Type {
     #[must_use]
-    pub fn inner(&self) -> Type {
+    pub fn inner(&self) -> Self {
         match self {
             Self::Array(t) => *t.clone(),
             Self::Json(JsonType::List) => JsonType::Any.into(),
@@ -140,9 +140,9 @@ impl TypeConversion for Type {
     /// `JsonType::Any` or the original type instead of `Unknown`)
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
         match self {
-            Type::Json(json_type) => json_type.try_convert(expr),
-            Type::RecordSet(_) if matches!(expr.ty, Type::RecordSet(_)) => Ok(expr),
-            Type::RecordSet(_) if expr.ty == Type::Json(JsonType::List) => Ok(TypedExpression {
+            Self::Json(json_type) => json_type.try_convert(expr),
+            Self::RecordSet(_) if matches!(expr.ty, Self::RecordSet(_)) => Ok(expr),
+            Self::RecordSet(_) if expr.ty == Self::Json(JsonType::List) => Ok(TypedExpression {
                 expr: simple_func("jsonb_array_elements", expr.expr),
                 ty: self.clone(),
             }),
@@ -176,7 +176,7 @@ impl TypeConversion for JsonType {
                     TypedExpression { expr, ty },
                 )),
                 (from, _) => Err(ConversionError::CantConvert(
-                    from.clone().into(),
+                    from.into(),
                     to.clone().into(),
                 )),
             },
@@ -208,7 +208,7 @@ impl TypeConversion for JsonType {
             }),
             (expr, Type::Unknown, Self::Any) => Ok(TypedExpression {
                 expr: expr.cast_as(alias("jsonb")),
-                ty: Type::Json(JsonType::Any),
+                ty: Type::Json(Self::Any),
             }),
             (_, Type::Null, Self::Any | Self::Null) => Ok(TypedExpression {
                 expr: SimpleExpr::Constant(sea_query::Value::Json(Some(Box::new(
@@ -218,7 +218,7 @@ impl TypeConversion for JsonType {
                 ty: Self::Null.into(),
             }),
             (_, a, b) => Err(ConversionError::UnimplementedConvertion(
-                a.clone(),
+                a,
                 Type::Json(b.clone()),
             )),
         }
@@ -226,12 +226,12 @@ impl TypeConversion for JsonType {
 }
 impl From<JsonType> for Type {
     fn from(value: JsonType) -> Self {
-        Type::Json(value)
+        Self::Json(value)
     }
 }
 
 impl From<SqlType> for Type {
     fn from(value: SqlType) -> Self {
-        Type::Sql(value)
+        Self::Sql(value)
     }
 }

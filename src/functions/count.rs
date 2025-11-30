@@ -20,7 +20,7 @@ pub struct Count(Countable);
 impl Count {
     pub fn new(arg: &Expression, aggregate: &[Expression]) -> Result<Rc<Self>> {
         let aggregate: Vec<_> = aggregate.to_vec();
-        Ok(Rc::new(Count(match &**arg {
+        Ok(Rc::new(Self(match &**arg {
             ExpressionInner::Variable(v) => match v {
                 Variable::List(_) | Variable::SqlSubQueryAtom(_, _) if !aggregate.is_empty() => {
                     return Err(ParseError::Todo("Can't use agg in static count"));

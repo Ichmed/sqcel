@@ -13,6 +13,7 @@ pub struct SqlLayout {
 }
 
 impl SqlLayout {
+    #[must_use]
     pub fn new(database: Database) -> Self {
         Self {
             database,
@@ -27,16 +28,18 @@ pub struct Database {
 }
 
 impl Database {
+    #[must_use]
     pub fn new() -> Self {
-        Self {
-            layout: Default::default(),
-        }
+        Self::default()
     }
 
+    #[must_use]
     pub fn schema(self, schema: Schema) -> Self {
         self.schema_alias(schema.name.clone(), schema)
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn schema_alias(mut self, name: impl ToString, schema: Schema) -> Self {
         self.layout.insert(name.to_string(), schema);
         self
@@ -50,16 +53,22 @@ pub struct Schema {
 }
 
 impl Schema {
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn new(name: impl ToString) -> Self {
         Self {
             layout: Default::default(),
             name: name.to_string(),
         }
     }
+
+    #[must_use]
     pub fn table(self, table: Table) -> Self {
         self.table_alias(table.name.clone(), table)
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn table_alias(mut self, name: impl ToString, table: Table) -> Self {
         self.layout.insert(name.to_string(), table);
         self
@@ -72,12 +81,16 @@ pub struct Table {
     name: String,
 }
 impl Table {
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn new(name: impl ToString) -> Self {
         Self {
             layout: Default::default(),
             name: name.to_string(),
         }
     }
+
+    #[must_use]
     pub fn columns(mut self, columns: impl IntoIterator<Item = impl Into<Column>>) -> Self {
         for c in columns {
             self = self.column(c);
@@ -85,11 +98,14 @@ impl Table {
         self
     }
 
+    #[must_use]
     pub fn column(self, column: impl Into<Column>) -> Self {
         let column = column.into();
         self.column_alias(column.name.clone(), column)
     }
 
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn column_alias(mut self, name: impl ToString, column: impl Into<Column>) -> Self {
         self.layout.insert(name.to_string(), column.into());
         self
@@ -102,6 +118,8 @@ pub struct Column {
 }
 
 impl Column {
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn new(name: impl ToString, ty: SqlType) -> Self {
         Self {
             name: name.to_string(),
@@ -117,11 +135,13 @@ impl<T: ToString> From<(T, SqlType)> for Column {
 }
 
 impl SqlLayout {
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn enter_schema(&mut self, name: impl ToString) -> &mut Self {
         self.schema = self.database.layout.get(&name.to_string()).cloned();
         self
     }
 
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn enter_table(&mut self, name: impl ToString) -> &mut Self {
         self.table = self
             .schema
@@ -207,19 +227,11 @@ impl SqlLayout {
                 .layout
                 .get(&table)
                 .map(|table| TableRef::Table(alias(table.name.clone()))),
-            (Some(schema), Some(table)) => {
-                self.database
-                    .layout
-                    .get(&schema.to_string())
-                    .and_then(|schema| {
-                        schema.layout.get(&table.to_string()).map(|table| {
-                            TableRef::SchemaTable(
-                                alias(schema.name.clone()),
-                                alias(table.name.clone()),
-                            )
-                        })
-                    })
-            }
+            (Some(schema), Some(table)) => self.database.layout.get(&schema).and_then(|schema| {
+                schema.layout.get(&table).map(|table| {
+                    TableRef::SchemaTable(alias(schema.name.clone()), alias(table.name.clone()))
+                })
+            }),
             _ => None,
         }
     }

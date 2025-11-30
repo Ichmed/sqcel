@@ -40,6 +40,7 @@ impl ToIntermediate for CelExpression {
                 // to the exceptions above (should probably be "Unimplemented")
                 // We can still forward this to the SQL statement because
                 // it _is_ implemented there
+                #[allow(clippy::match_same_arms, reason = "Call out the weird Error name")]
                 Err(ExecutionError::UnsupportedFieldsConstruction(_)) => (),
                 _ => (),
             }
@@ -64,7 +65,7 @@ impl ToIntermediate for CelExpression {
             CelExpression::FunctionCall(name, rec, args) => {
                 ExpressionInner::FunctionCall(functions::get(
                     tp,
-                    name.to_sqcel(tp)?,
+                    &name.to_sqcel(tp)?,
                     rec.as_ref().map(|rec| rec.to_sqcel(tp)).transpose()?,
                     args.iter()
                         .map(|arg| arg.to_sqcel(tp))

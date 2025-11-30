@@ -22,7 +22,7 @@ ident!(
     /// returns a view into a reasonable "universe"
     ///
     /// In case of a TRIGGER `here` should evaluate
-    /// to a RecordSet that contains (among others) `NEW`
+    /// to a `RecordSet` that contains (among others) `NEW`
     /// and would have contained `OLD`
     ///
     /// Example `WHERE "user" = {user}`
@@ -37,7 +37,7 @@ ident!(
     /// Contains a refference to the variable `we`
     /// which should be set by the outside context
     /// such that it evaluates to a SELECT query that
-    /// returns a RecordSet that is a reasonable sub set
+    /// returns a `RecordSet` that is a reasonable sub set
     /// of `here`. As such `we` should fall back to `here`
     /// if not explicitly set.
     ///

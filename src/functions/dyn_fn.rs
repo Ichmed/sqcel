@@ -69,14 +69,14 @@ impl DynamicFunction for CelFunction {
                 None => builder.var(key, Variable::SqlAny(Box::new(val.to_sql(tp)?.expr))),
             };
         }
-        self.code.to_sql(&builder.build())
+        self.code.to_sql(&builder.build()?)
     }
 }
 
 impl CelFunction {
     pub fn parse(tp: &Transpiler, code: &str) -> Result<Self> {
         let (name, rest) = code
-            .split_once("(")
+            .split_once('(')
             .ok_or(ParseError::Todo("No arg-bracket"))?;
 
         let (args, rest) = rest
@@ -84,20 +84,20 @@ impl CelFunction {
             .ok_or(ParseError::Todo("No arrow"))?;
 
         let args = args.trim();
-        let (method, args) = if !args.is_empty() {
+        let (method, args) = if args.is_empty() {
+            (false, Vec::new())
+        } else {
             let args = args
-                .split(",")
+                .split(',')
                 .map(|s| s.trim().to_owned())
                 .collect::<Vec<_>>();
             match args.as_slice() {
                 [first, args @ ..] if first == "self" => (true, args.into()),
                 _ => (false, args),
             }
-        } else {
-            (false, Vec::new())
         };
 
-        let (ty, code) = rest.split_once(":").ok_or(ParseError::Todo("No colon"))?;
+        let (ty, code) = rest.split_once(':').ok_or(ParseError::Todo("No colon"))?;
 
         let ty = ty.trim();
 
@@ -108,7 +108,7 @@ impl CelFunction {
             args,
             rt: Some(
                 SqlType::from_str(ty)
-                    .map_err(|_| ParseError::Todo("Unknown type"))?
+                    .map_err(|()| ParseError::Todo("Unknown type"))?
                     .into(),
             ),
         })
@@ -135,7 +135,8 @@ mod test {
             &Transpiler::new()
                 .add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
                 .unwrap()
-                .build(),
+                .build()
+                .unwrap(),
             PostgresQueryBuilder,
         )
         .unwrap();
@@ -151,7 +152,8 @@ mod test {
             &Transpiler::new()
                 .add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
                 .unwrap()
-                .build(),
+                .build()
+                .unwrap(),
             PostgresQueryBuilder,
         )
         .unwrap();

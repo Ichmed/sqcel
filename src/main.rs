@@ -70,7 +70,7 @@ impl Cli {
         let variables = variables
             .into_iter()
             .map(|v| {
-                v.split_once(":")
+                v.split_once(':')
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
                     .expect("key:value pairs must contain a colon")
             })
@@ -108,7 +108,9 @@ impl Cli {
         //     })
         //     .collect();
 
-        let types = if !types.is_empty() {
+        let types = if types.is_empty() {
+            Default::default()
+        } else {
             let mut parser = protobuf_parse::Parser::new();
             parser.include(".");
             for path in types {
@@ -123,8 +125,6 @@ impl Cli {
                 .into_iter()
                 .map(|m| (m.name().to_owned(), m))
                 .collect()
-        } else {
-            Default::default()
         };
 
         Ok(Transpiler {
@@ -138,7 +138,7 @@ impl Cli {
         .vars(variables)
         .record("NEW")
         .record("OLD")
-        .build())
+        .build()?)
     }
 }
 

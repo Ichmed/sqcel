@@ -24,13 +24,14 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
 
 [features]
-default = ["serde_json", "cli", "thread-safe"]
+default = ["serde_json", "cli", "thread-safe", "fuzzing"]
 serde_json = ["dep:serde_json"]
 cli = ["dep:clap", "miette/fancy"]
 fuzzing = []
 thread-safe = ["sea-query/thread-safe"]
 
 [dev-dependencies]
+anyhow = "1.0.100"
 async-once-cell = "0.5.4"
 futures = "0.3.31"
 indoc = "2.0.6"
@@ -39,3 +40,12 @@ tokio-postgres = { version = "0.7.13", features = [
     "array-impls",
     "with-serde_json-1",
 ] }
+
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Nice to allow so we can swap out private data structures more easily
+default_trait_access = "allow"
+missing_errors_doc = "allow"

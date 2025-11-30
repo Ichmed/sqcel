@@ -61,18 +61,20 @@ pub struct Transpiler {
 
 impl Transpiler {
     #[allow(clippy::new_ret_no_self)]
+    #[must_use]
     pub fn new() -> TranspilerBuilder {
         TranspilerBuilder::create_empty()
     }
 
     pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
-        self.transpile_expr(cel_parser::parse(src)?)
+        self.transpile_expr(&cel_parser::parse(src)?)
     }
 
-    pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
+    pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
         expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
     }
 
+    #[must_use]
     pub fn to_builder(&self) -> TranspilerBuilder {
         let Transpiler {
             variables,
@@ -99,14 +101,15 @@ impl Transpiler {
 
     pub fn to_context(&self) -> Result<Context<'_>> {
         let mut c = Context::default();
-        for (name, value) in self.variables.iter() {
+        for (name, value) in &self.variables {
             if let Ok(value) = CelValue::try_from(value.clone()) {
-                c.add_variable_from_value(name, value)
-            };
+                c.add_variable_from_value(name, value);
+            }
         }
         Ok(c)
     }
 
+    #[must_use]
     pub fn enter_anonymous_table(mut self, content: HashMap<String, Column>) -> Self {
         self.layout.enter_anonymous_table(content);
         self
@@ -115,14 +118,15 @@ impl Transpiler {
 
 impl TranspilerBuilder {
     pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
-        self.transpile_expr(cel_parser::parse(src)?)
+        self.transpile_expr(&cel_parser::parse(src)?)
     }
 
-    pub fn transpile_expr(&self, expr: CelExpr) -> Result<SqlExpr> {
+    pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
         let tp = self._build()?;
         expr.to_sqcel(&tp)?.to_sql(&tp).map(|x| x.expr)
     }
 
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn var(&mut self, key: impl ToString, val: impl Into<Variable>) -> &mut Self {
         self.variables
             .get_or_insert_default()
@@ -141,8 +145,8 @@ impl TranspilerBuilder {
         self
     }
 
-    pub fn build(&mut self) -> Transpiler {
-        self._build().unwrap()
+    pub fn build(&mut self) -> Result<Transpiler> {
+        Ok(self._build()?)
     }
 
     pub fn enter_schema(&mut self, name: impl ToString) -> &mut Self {
@@ -187,6 +191,7 @@ impl TranspilerBuilder {
         self.layout.as_ref()?.table_asterisk(name)
     }
 
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn record(&mut self, record: impl ToString) -> &mut Self {
         self.records
             .get_or_insert_default()
@@ -194,6 +199,7 @@ impl TranspilerBuilder {
         self
     }
 
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn record_alias(&mut self, alias: impl ToString, record: impl ToString) -> &mut Self {
         self.records
             .get_or_insert_default()
@@ -201,6 +207,11 @@ impl TranspilerBuilder {
         self
     }
 
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "May become fallible in the future"
+    )]
     pub fn add_dyn_func(
         &mut self,
         name: impl ToString,
@@ -251,6 +262,7 @@ impl TranspilerBuilder {
     }
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
 pub(crate) fn alias(s: impl ToString) -> DynIden {
     SeaRc::new(Alias::new(s.to_string()))
 }
@@ -285,6 +297,8 @@ pub enum ParseError {
     WrongFunctionArgs(#[from] WrongFunctionArgs),
     #[error(transparent)]
     ConversionError(#[from] ConversionError),
+    #[error(transparent)]
+    IntConversion(#[from] std::num::TryFromIntError),
 
     #[error("Schema \"{}\" could not be found in the layout", .0)]
     SchemaNotFound(String),
@@ -337,7 +351,7 @@ mod test {
 
     #[test]
     fn test() {
-        let tp = Transpiler::new().build();
+        let tp = Transpiler::new().build().unwrap();
 
         let input = indoc!(r#"[1, 2, 3].map(x, int(x) > 1, int(x) + 1)"#);
         let sql = helper(input, &tp);
@@ -377,7 +391,7 @@ mod test {
 
     #[test]
     fn proto_fields() {
-        let tp = Transpiler::new().types(read_proto()).build();
+        let tp = Transpiler::new().types(read_proto()).build().unwrap();
         assert_eq!(
             helper(r#"M{needed: 5, not_needed: 5}"#, &tp),
             r#"SELECT jsonb_build_object('needed', 5, 'not_needed', 5)"#
@@ -393,6 +407,7 @@ mod test {
         TranspilerBuilder::create_empty()
             .types(read_proto())
             .build()
+            .unwrap()
             .transpile(r#"M{not_needed: 5}"#)
             .unwrap();
     }
@@ -421,7 +436,8 @@ mod test {
                 layout.enter_schema("my_sch").enter_table("my_tab");
                 layout
             })
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(helper("my_col", &tp), r#"SELECT "my_col""#);
         assert_eq!(helper("my_alias", &tp), r#"SELECT "hidden""#);

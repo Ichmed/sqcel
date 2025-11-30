@@ -60,6 +60,7 @@ pub enum ExpressionInner {
 }
 
 impl ExpressionInner {
+    #[must_use]
     pub fn into_anonymous(self) -> Expression {
         Expression {
             inner: Rc::new(self),
@@ -68,6 +69,8 @@ impl ExpressionInner {
 }
 
 impl Expression {
+    #[must_use]
+    #[allow(clippy::match_same_arms, reason = "Nicer formatting")]
     pub fn returntype(&self, tp: &Transpiler) -> Type {
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
@@ -92,6 +95,7 @@ impl Ident {
         (*self.0).clone().into()
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -336,9 +340,7 @@ impl ToSql for AccessChain {
                         .map(|x| x.as_str().to_owned())
                         .collect::<Vec<_>>()
                         .join("."),
-                    self.to_path()
-                        .map(Cow::into_owned)
-                        .unwrap_or("?".to_owned()),
+                    self.to_path().map_or("?".to_owned(), Cow::into_owned),
                 ));
             }
         };
@@ -390,9 +392,7 @@ impl ToSql for AccessChain {
                     .map(|x| x.as_str().to_owned())
                     .collect::<Vec<_>>()
                     .join("."),
-                self.to_path()
-                    .map(Cow::into_owned)
-                    .unwrap_or("?".to_owned()),
+                self.to_path().map_or("?".to_owned(), Cow::into_owned),
             )),
         }
     }
@@ -405,10 +405,7 @@ impl ToSql for AccessChain {
             }
             (None, [table, ..]) if tp.variables.contains_key(table.as_str()) => {
                 match tp.variables.get(table.as_str()).unwrap() {
-                    Variable::SqlSubQuery(_, hash_map) => {
-                        Type::RecordSet(Box::new(RecordSet(hash_map.clone(), true)))
-                    }
-                    Variable::SqlSubQueryAtom(_, hash_map) => {
+                    Variable::SqlSubQuery(_, hash_map) | Variable::SqlSubQueryAtom(_, hash_map) => {
                         Type::RecordSet(Box::new(RecordSet(hash_map.clone(), true)))
                     }
                     Variable::Object(_) => JsonType::Map.into(),
@@ -535,7 +532,6 @@ impl ToSql for Expression {
                 ty: Type::Unknown,
                 expr: match unary_op {
                     UnaryOp::Not => expresion.to_sql(tp)?.expr.not(),
-                    UnaryOp::DoubleNot => expresion.to_sql(tp)?.expr,
                     UnaryOp::Minus => SimpleExpr::Constant(match &*expresion.as_ref().inner {
                         ExpressionInner::Variable(Variable::Atom(a)) => match a {
                             Atom::Int(i) => Value::BigInt(Some(-i)),
@@ -547,7 +543,7 @@ impl ToSql for Expression {
                         },
                         _ => return Err(Error::Todo("Can't be negative")),
                     }),
-                    UnaryOp::DoubleMinus => expresion.to_sql(tp)?.expr,
+                    UnaryOp::DoubleNot | UnaryOp::DoubleMinus => expresion.to_sql(tp)?.expr,
                 },
             },
             ExpressionInner::FunctionCall(x) => x.to_sql(tp)?,
@@ -576,7 +572,7 @@ impl Expression {
                 Variable::SqlSubQuery(select_statement, _) => subquery(
                     select_statement
                         .clone()
-                        .offset(index as u64)
+                        .offset(index.try_into()?)
                         .limit(1)
                         .take(),
                 ),
@@ -591,7 +587,7 @@ impl Expression {
                         Box::new(SubQueryStatement::SelectStatement(
                             Query::select()
                                 .expr(*simple_expr.clone())
-                                .offset(index as u64)
+                                .offset(index.try_into()?)
                                 .limit(1)
                                 .take(),
                         )),
@@ -599,8 +595,8 @@ impl Expression {
                 },
                 _ => return Err(Error::Todo("Can not be accessed")),
             },
-            ExpressionInner::Index(inner, index) => {
-                let inner = Self::index(tp, inner, *index)?;
+            ExpressionInner::Index(inner, inner_index) => {
+                let inner = Self::index(tp, inner, *inner_index)?;
                 TypedExpression {
                     ty: Type::Unknown,
                     expr: match inner.expr {
@@ -610,7 +606,7 @@ impl Expression {
                         }
                         x => x,
                     }
-                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(*index)))),
+                    .cast_json_field(SimpleExpr::Constant(Value::BigInt(Some(index)))),
                 }
             }
             ExpressionInner::Access(acc) => {
@@ -637,6 +633,7 @@ impl Expression {
         })
     }
 
+    #[must_use]
     pub fn is_object(&self) -> bool {
         match &*self.inner {
             ExpressionInner::Variable(var) => var.is_object(),
@@ -665,6 +662,7 @@ impl Expression {
         }
     }
 
+    #[must_use]
     pub fn as_variable(&self) -> Option<&Variable> {
         match &*self.inner {
             ExpressionInner::Variable(variable) => Some(variable),

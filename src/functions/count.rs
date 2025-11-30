@@ -18,25 +18,25 @@ enum Countable {
 pub struct Count(Countable);
 
 impl Count {
-    pub fn new(arg: &Expression, agg: &[Expression]) -> Result<Rc<Self>> {
-        let agg: Vec<_> = agg.to_vec();
+    pub fn new(arg: &Expression, aggregate: &[Expression]) -> Result<Rc<Self>> {
+        let aggregate: Vec<_> = aggregate.to_vec();
         Ok(Rc::new(Count(match &**arg {
             ExpressionInner::Variable(v) => match v {
-                Variable::List(_) | Variable::SqlSubQueryAtom(_, _) if !agg.is_empty() => {
+                Variable::List(_) | Variable::SqlSubQueryAtom(_, _) if !aggregate.is_empty() => {
                     return Err(ParseError::Todo("Can't use agg in static count"));
                 }
                 Variable::List(expressions) => Countable::Fix(expressions.len()),
                 Variable::SqlSubQueryAtom(_, _) => Countable::Fix(1),
                 Variable::SqlSubQuery(select_statement, _) => {
-                    Countable::Subquery(select_statement.clone(), agg)
+                    Countable::Subquery(select_statement.clone(), aggregate)
                 }
                 Variable::SqlAny(simple_expr) => Countable::Subquery(
                     Box::new(Query::select().expr(*simple_expr.clone()).take()),
-                    agg,
+                    aggregate,
                 ),
                 _ => return Err(ParseError::Todo("Uncountable variable")),
             },
-            ExpressionInner::Access(x) => Countable::Access(x.clone(), agg),
+            ExpressionInner::Access(x) => Countable::Access(x.clone(), aggregate),
             _ => return Err(ParseError::Todo("Uncountable expression")),
         })))
     }
@@ -47,13 +47,13 @@ impl Function for Count {}
 impl ToSql for Count {
     fn returntype(&self, _tp: &Transpiler) -> Type {
         match &self.0 {
-            Countable::Fix(_) => Type::Sql(SqlType::UInteger),
             Countable::Subquery(_, x) if !x.is_empty() => {
                 RecordSet(Default::default(), true).into()
             }
-            Countable::Subquery(_, _) => Type::Sql(SqlType::UInteger),
             Countable::Access(_, x) if !x.is_empty() => RecordSet(Default::default(), true).into(),
-            Countable::Access(_, _) => Type::Sql(SqlType::UInteger),
+            Countable::Fix(_) | Countable::Subquery(_, _) | Countable::Access(_, _) => {
+                Type::Sql(SqlType::UInteger)
+            }
         }
     }
 
@@ -61,7 +61,7 @@ impl ToSql for Count {
         Ok(match &self.0 {
             Countable::Fix(fix) => TypedExpression {
                 ty: Type::Sql(SqlType::UInteger),
-                expr: SimpleExpr::Constant(Value::BigInt(Some(*fix as i64))),
+                expr: SimpleExpr::Constant(Value::BigInt(Some((*fix).try_into()?))),
             },
             Countable::Subquery(select_statement, aggregate) => subquery({
                 let aggregate = aggregate
@@ -139,7 +139,8 @@ mod test {
                 Schema::new("postgres").table(Table::new("foo").column(("bar", SqlType::UInteger))),
             )))
             .enter_schema("postgres")
-            .build();
+            .build()
+            .unwrap();
 
         let sql = get_plaintext_expression("foo.count(bar)", &tp, PostgresQueryBuilder).unwrap();
         assert_eq!(
@@ -159,7 +160,8 @@ mod test {
                 ])),
             )))
             .enter_schema("postgres")
-            .build();
+            .build()
+            .unwrap();
 
         let sql =
             get_plaintext_expression("foo.count(bar_1, bar_2, bar_3)", &tp, PostgresQueryBuilder)

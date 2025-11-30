@@ -1,5 +1,6 @@
 mod count;
 pub mod dyn_fn;
+pub mod json;
 mod last;
 mod list_oper;
 mod map;
@@ -24,13 +25,14 @@ use sea_query::{Query, SelectStatement, SimpleExpr as SqlExpression, SubQuerySta
 
 pub trait Function: ToSql + Any + Send + Sync {}
 
+#[allow(clippy::match_same_arms, reason = "Make valid call patterns explicit")]
 pub fn get(
     tp: &Transpiler,
-    name: Expression,
+    name: &Expression,
     rec: Option<Expression>,
     args: Vec<Expression>,
 ) -> Result<Rc<dyn Function>> {
-    if let ExpressionInner::Access(name) = &*name {
+    if let ExpressionInner::Access(name) = &**name {
         Ok(
             match (
                 name.to_path()
@@ -39,33 +41,36 @@ pub fn get(
                 rec.as_ref(),
                 args.as_slice(),
             ) {
-                ("int", None, [x]) => cast("integer", SqlType::Integer.into(), x, tp)?,
+                ("dyn", None, [x]) => Rc::new(json::Json(x.clone())),
+                ("dyn", _, _) => Err(WrongFunctionArgs::given("dyn", rec, args).allowed(false, 1))?,
+
+                ("int", None, [x]) => cast("integer", SqlType::Integer.into(), x, tp),
                 ("int", _, _) => Err(WrongFunctionArgs::given("int", rec, args).allowed(false, 1))?,
 
-                ("string", None, [x]) => cast("text", SqlType::String.into(), x, tp)?,
+                ("string", None, [x]) => cast("text", SqlType::String.into(), x, tp),
                 ("string", _, _) => {
                     Err(WrongFunctionArgs::given("string", rec, args).allowed(false, 1))?
                 }
 
-                ("bool", None, [x]) => cast("boolean", SqlType::Boolean.into(), x, tp)?,
+                ("bool", None, [x]) => cast("boolean", SqlType::Boolean.into(), x, tp),
                 ("bool", _, _) => {
                     Err(WrongFunctionArgs::given("bool", rec, args).allowed(false, 1))?
                 }
 
-                ("double", None, [x]) => cast("double precision", SqlType::Double.into(), x, tp)?,
+                ("double", None, [x]) => cast("double precision", SqlType::Double.into(), x, tp),
                 ("double", _, _) => {
                     Err(WrongFunctionArgs::given("double", rec, args).allowed(false, 1))?
                 }
 
                 ("time", None, [x]) => {
-                    cast("timestamp with time zone", Type::Sql(SqlType::Time), x, tp)?
+                    cast("timestamp with time zone", Type::Sql(SqlType::Time), x, tp)
                 }
                 ("time", _, _) => {
                     Err(WrongFunctionArgs::given("time", rec, args).allowed(false, 1))?
                 }
 
-                ("first", Some(list), []) => First::new(list)?,
-                ("first", None, [list]) => First::new(list)?,
+                ("first", Some(list), []) => First::new(list),
+                ("first", None, [list]) => First::new(list),
                 ("count", Some(x), agg) => Count::new(x, agg)?,
                 ("count", _, _) => Err(WrongFunctionArgs::given("count", rec, args)
                     .allowed(false, 1)
@@ -137,6 +142,7 @@ pub struct WrongFunctionArgs {
 }
 
 impl WrongFunctionArgs {
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn given(name: impl ToString, rec: Option<Expression>, args: Vec<Expression>) -> Self {
         Self {
             name: name.to_string(),
@@ -161,7 +167,7 @@ impl Display for WrongFunctionArgs {
         if !self.expected.is_empty() {
             f.write_str("\nValid call structures:")?;
 
-            for (rec, args) in self.expected.iter() {
+            for (rec, args) in &self.expected {
                 f.write_str("\n- ")?;
                 if *rec {
                     f.write_str("x.")?;
@@ -200,10 +206,11 @@ impl ToSql for Cast {
 }
 
 #[inline]
-fn cast(tyn: &'static str, ty: Type, exp: &Expression, _: &Transpiler) -> Result<Rc<dyn Function>> {
-    Ok(Rc::new(Cast(exp.clone(), tyn, ty)))
+fn cast(tyn: &'static str, ty: Type, exp: &Expression, _: &Transpiler) -> Rc<dyn Function> {
+    Rc::new(Cast(exp.clone(), tyn, ty))
 }
 
+#[must_use]
 pub fn to_select(expr: SqlExpression) -> SelectStatement {
     match expr {
         SqlExpression::SubQuery(_, boxed) => match *boxed {
@@ -216,6 +223,7 @@ pub fn to_select(expr: SqlExpression) -> SelectStatement {
     }
 }
 
+#[must_use]
 pub fn subquery(s: SelectStatement) -> TypedExpression {
     TypedExpression {
         ty: Type::Unknown,

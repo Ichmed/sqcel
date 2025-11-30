@@ -26,7 +26,7 @@
  */
 use anyhow::anyhow;
 use cel_interpreter::Program;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqcel::{
     PostgresQueryBuilder, Query, Transpiler,
     intermediate::{ToIntermediate, ToSql},
@@ -44,7 +44,7 @@ async fn connect_pg() -> Client {
 }
 
 async fn from_pg(src: &str) -> anyhow::Result<Value> {
-    let tp = Transpiler::new().reduce(false).build();
+    let tp = Transpiler::new().reduce(false).build().unwrap();
 
     // let q = dbg!(dbg!(cel_parser::parse(src))?.to_sqcel(&tp))?.to_sql(&tp)?;
     let q = cel_parser::parse(src)?.to_sqcel(&tp)?.to_sql(&tp)?;
@@ -160,6 +160,10 @@ macro_rules! bug_both {
 
 // --- Primitives ---
 
+// null
+
+good!(null "null" == json!(null));
+
 // -- bool --
 good! {
     boolean_true
@@ -189,18 +193,27 @@ bug_sql!(
 // -- String --
 good!(string_literal "\"foobar\"" == "foobar");
 
-// Weird bug in postgres_serde
 good!(float_32 "1.1" == 1.1);
 
 // --- Arrays
 good!(
     simple_index_array r#"[1, 2, 3][1]"# == 2;
-    nested_index_array r#"{"a": [1, 2, 3]}.a[1]"# == 2
+    nested_index_array r#"[[1, 2, 3]][0][1]"# == 2;
+    index_array_in_object r#"{"a": [1, 2, 3]}.a[1]"# == 2;
+    array
+    "[1, 2, 3]" == [1, 2, 3];
+    array_equals
+    "[1, 2, 3] == [1, 2, 3]";
 );
 
 // --- Objects
 
-good!(extract_int r#"int({"foo": 1}.foo)"# == 1);
+good!(
+    construct_empty_object r#"{}"# == json!({});
+    construct_object r#"{"a": 1}"# == json!({"a": 1});
+    construct_nested_object r#"{"a": {"b": 1337}}"# == json!({"a": {"b": 1337}});
+    extract_int r#"int({"foo": 1}.foo)"# == 1
+);
 
 // disabled until .proto file is included
 // -- Proto Messages --
@@ -221,10 +234,6 @@ bug_both!(
 // -- Map Array
 
 good! {
-    array
-    "[1, 2, 3]" == [1, 2, 3];
-    array_equals
-    "[1, 2, 3] == [1, 2, 3]";
     map_array
     "[1, 2, 3].map(x, int(x) + 1)" == [2, 3, 4];
     filter_array_correct

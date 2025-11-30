@@ -37,9 +37,7 @@ impl Object {
     fn verify(&self, tp: &Transpiler) -> Result<()> {
         // Verify struct layout
 
-        let type_name = if let Some(schema) = self.schema.as_ref() {
-            schema
-        } else {
+        let Some(type_name) = self.schema.as_ref() else {
             return Ok(());
         };
 
@@ -56,7 +54,7 @@ impl Object {
         let mut fields: HashMap<String, bool> = type_info
             .field
             .iter()
-            .flat_map(|f| {
+            .filter_map(|f| {
                 f.name
                     .as_ref()
                     .map(|name| (name.clone(), f.proto3_optional.unwrap_or_default()))
@@ -69,15 +67,13 @@ impl Object {
             .map(|(name, _)| name.as_str())
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .flat_map(|name| fields.remove(name).is_none().then_some(name))
-            .next()
-            .map(|f| {
+            .find(|name| fields.remove(*name).is_none())
+            .map_or(Ok(()), |f| {
                 Err(ParseError::UnknownField(
                     type_name.clone().into_owned(),
                     f.to_owned(),
                 ))
-            })
-            .unwrap_or(Ok(()))?;
+            })?;
 
         // Error if there is a field missing in the message that is _not_ optional
         let missing_fields: Vec<_> = fields
@@ -100,7 +96,7 @@ impl ToSql for Object {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         self.verify(tp)?;
         Ok(TypedExpression {
-            ty: Type::Unknown,
+            ty: JsonType::Map.into(),
             expr: SimpleExpr::FunctionCall(
                 Func::cust(Alias::new("jsonb_build_object")).args(
                     self.data
@@ -124,7 +120,7 @@ impl ToSql for Variable {
         Ok(match self {
             Variable::Object(o) => o.to_sql(tp)?,
             Variable::List(variables) => TypedExpression {
-                ty: Type::Json(JsonType::List),
+                ty: JsonType::List.into(),
                 expr: SimpleExpr::FunctionCall(
                     Func::cust(Alias::new("jsonb_build_array")).args(
                         variables
@@ -136,8 +132,8 @@ impl ToSql for Variable {
             },
             Variable::Atom(atom) => atom.to_sql(tp)?,
 
-            Variable::SqlSubQuery(select_statement, _) => subquery(*select_statement.clone()),
-            Variable::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
+            Variable::SqlSubQuery(select_statement, _)
+            | Variable::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
             Variable::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),
@@ -150,10 +146,7 @@ impl ToSql for Variable {
             Variable::Object(_) => JsonType::Map.into(),
             Variable::List(_) => JsonType::List.into(),
             Variable::Atom(atom) => atom.returntype(tp),
-            Variable::SqlSubQuery(_, cols) => {
-                Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
-            }
-            Variable::SqlSubQueryAtom(_, cols) => {
+            Variable::SqlSubQuery(_, cols) | Variable::SqlSubQueryAtom(_, cols) => {
                 Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
             }
             Variable::SqlAny(_) => Type::Unknown,
@@ -162,6 +155,7 @@ impl ToSql for Variable {
 }
 
 impl Variable {
+    #[must_use]
     pub fn is_object(&self) -> bool {
         matches!(self, Self::Object { .. })
     }

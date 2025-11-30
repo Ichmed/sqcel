@@ -1,6 +1,6 @@
 use std::{collections::HashMap, result::Result, str::FromStr};
 
-use sea_query::{Func, SimpleExpr};
+use sea_query::{BinOper, Func, SimpleExpr, extension::postgres::PgBinOper};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -9,7 +9,7 @@ use crate::{structure::Column, transpiler::alias};
 pub trait TypeConversion {
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError>;
 
-    /// Assume UnsafeConversions are succesfull
+    /// Assume `UnsafeConversions` are succesfull
     fn force_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
         match self.try_convert(expr) {
             Err(ConversionError::UnsafeConversion(_, x)) => Ok(x),
@@ -25,6 +25,7 @@ pub struct TypedExpression {
 }
 
 impl TypedExpression {
+    #[must_use]
     pub fn assume_is(&self, ty: Type) -> Self {
         Self { ty, ..self.clone() }
     }
@@ -49,18 +50,20 @@ impl From<RecordSet> for Type {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RecordSet(pub HashMap<String, Column>, pub bool);
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub enum Type {
     Json(JsonType),
     Sql(SqlType),
     Array(Box<Type>),
     Schema,
     RecordSet(Box<RecordSet>),
+    #[default]
     Unknown,
     Null,
 }
 
 impl Type {
+    #[must_use]
     pub fn inner(&self) -> Type {
         match self {
             Self::Array(t) => *t.clone(),
@@ -78,6 +81,7 @@ pub enum JsonType {
     Number,
     Boolean,
     String,
+    Null,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Deserialize, Serialize)]
@@ -102,6 +106,7 @@ impl FromStr for SqlType {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        #[allow(clippy::match_same_arms, reason = "Explicitly list all possibilities")]
         Ok(match s.to_lowercase().as_str() {
             "text" => Self::String,
             "bool" => Self::Boolean,
@@ -122,14 +127,15 @@ impl FromStr for SqlType {
     }
 }
 
-fn simple_func(name: &str, arg: SimpleExpr) -> SimpleExpr {
+#[must_use]
+pub fn simple_func(name: &str, arg: SimpleExpr) -> SimpleExpr {
     SimpleExpr::FunctionCall(Func::cust(alias(name)).arg(arg))
 }
 
 impl TypeConversion for Type {
     /// Try to convert the given expr into one of the given type
     ///
-    /// The returned [TypedExpression] may have a type that is more
+    /// The returned [`TypedExpression`] may have a type that is more
     /// specific than the one that was requested (e.g `JsonType::List` instead of
     /// `JsonType::Any` or the original type instead of `Unknown`)
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
@@ -152,21 +158,30 @@ impl TypeConversion for JsonType {
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
         let ty = Type::Json(self.clone());
 
-        match (&expr.ty, self) {
-            (Type::Json(_), Self::Any) => Ok(expr),
-            (Type::Json(from), to) => match (from, to) {
-                (from, to) if from == to => Ok(expr),
-                (_, Self::Any) => Ok(expr),
-                (Self::Any, _) => Err(ConversionError::UnsafeConversion(
-                    Type::Json(from.clone()),
-                    TypedExpression { ty, ..expr },
+        match (expr.expr, expr.ty, self) {
+            (
+                SimpleExpr::Binary(a, BinOper::PgOperator(PgBinOper::CastJsonField), b),
+                _,
+                Self::Any,
+            ) => Ok(TypedExpression {
+                expr: SimpleExpr::Binary(a, BinOper::PgOperator(PgBinOper::GetJsonField), b),
+                ty: Self::Any.into(),
+            }),
+            (expr, ty @ Type::Json(_), Self::Any) => Ok(TypedExpression { expr, ty }),
+            (expr, Type::Json(from), to) => match (from, to) {
+                (from, to) if from == *to => Ok(TypedExpression { expr, ty }),
+                (_, Self::Any) => Ok(TypedExpression { expr, ty }),
+                (from @ Self::Any, _) => Err(ConversionError::UnsafeConversion(
+                    Type::Json(from),
+                    TypedExpression { expr, ty },
                 )),
-                _ => Err(ConversionError::CantConvert(
+                (from, _) => Err(ConversionError::CantConvert(
                     from.clone().into(),
                     to.clone().into(),
                 )),
             },
             (
+                expr,
                 Type::Sql(
                     SqlType::Number
                     | SqlType::Float
@@ -176,39 +191,39 @@ impl TypeConversion for JsonType {
                 ),
                 Self::Any | Self::Number,
             ) => Ok(TypedExpression {
-                expr: simple_func("to_json", expr.expr),
+                expr: simple_func("to_jsonb", expr),
                 ty: Self::Number.into(),
             }),
-            (Type::Sql(SqlType::String), Self::Any | Self::String) => Ok(TypedExpression {
-                expr: simple_func("to_json", expr.expr.cast_as("text")),
+            (expr, Type::Sql(SqlType::String), Self::Any | Self::String) => Ok(TypedExpression {
+                expr: simple_func("to_jsonb", expr.cast_as("text")),
                 ty: Self::String.into(),
             }),
-            (Type::Sql(SqlType::Boolean), Self::Any | Self::Boolean) => Ok(TypedExpression {
-                expr: simple_func("to_json", expr.expr),
+            (expr, Type::Sql(SqlType::Boolean), Self::Any | Self::Boolean) => Ok(TypedExpression {
+                expr: simple_func("to_jsonb", expr),
                 ty: Self::Boolean.into(),
             }),
-            (Type::RecordSet(_), Self::Any | Self::List) => Ok(TypedExpression {
-                expr: simple_func("to_json", simple_func("array", expr.expr)),
+            (expr, Type::RecordSet(_), Self::Any | Self::List) => Ok(TypedExpression {
+                expr: simple_func("to_jsonb", simple_func("array", expr)),
                 ty: Self::List.into(),
             }),
-            (Type::Unknown, Self::Any) => Ok(TypedExpression {
-                expr: expr.expr.cast_as(alias("json")),
+            (expr, Type::Unknown, Self::Any) => Ok(TypedExpression {
+                expr: expr.cast_as(alias("jsonb")),
                 ty: Type::Json(JsonType::Any),
             }),
-            (a, b) => Err(ConversionError::UnimplementedConvertion(
+            (_, Type::Null, Self::Any | Self::Null) => Ok(TypedExpression {
+                expr: SimpleExpr::Constant(sea_query::Value::Json(Some(Box::new(
+                    serde_json::Value::Null,
+                ))))
+                .cast_as("jsonb"),
+                ty: Self::Null.into(),
+            }),
+            (_, a, b) => Err(ConversionError::UnimplementedConvertion(
                 a.clone(),
                 Type::Json(b.clone()),
             )),
         }
     }
 }
-
-impl Default for Type {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
 impl From<JsonType> for Type {
     fn from(value: JsonType) -> Self {
         Type::Json(value)

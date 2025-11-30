@@ -11,8 +11,9 @@ use crate::{
 pub struct First(Expression);
 
 impl First {
-    pub fn new(arg: &Expression) -> Result<Rc<Self>> {
-        Ok(Rc::new(Self(arg.clone())))
+    #[must_use]
+    pub fn new(arg: &Expression) -> Rc<Self> {
+        Rc::new(Self(arg.clone()))
     }
 }
 

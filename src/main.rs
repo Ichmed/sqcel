@@ -57,9 +57,6 @@ impl Cli {
     fn into_transpiler(self) -> miette::Result<Transpiler> {
         let Self {
             variables,
-            // columns,
-            // tables,
-            // schemas,
             types,
             accept_unknown_types,
             trigger_mode,
@@ -72,41 +69,16 @@ impl Cli {
             .map(|v| {
                 v.split_once(':')
                     .map(|(k, v)| (k.to_owned(), v.to_owned()))
-                    .expect("key:value pairs must contain a colon")
+                    .ok_or(miette!("key:value pairs must contain a colon"))
             })
+            .collect::<miette::Result<Vec<_>>>()?
+            .into_iter()
             .map(|(k, v)| {
                 (
                     k,
                     Variable::from(serde_json::from_str::<serde_json::Value>(&v).unwrap()),
                 )
             });
-
-        // let columns = columns
-        //     .into_iter()
-        //     .map(|v| {
-        //         v.split_once(":")
-        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        //             .unwrap_or((v.clone(), v))
-        //     })
-        //     .collect();
-
-        // let tables = tables
-        //     .into_iter()
-        //     .map(|v| {
-        //         v.split_once(":")
-        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        //             .unwrap_or((v.clone(), v))
-        //     })
-        //     .collect();
-
-        // let schemas = schemas
-        //     .into_iter()
-        //     .map(|v| {
-        //         v.split_once(":")
-        //             .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        //             .unwrap_or((v.clone(), v))
-        //     })
-        //     .collect();
 
         let types = if types.is_empty() {
             Default::default()

@@ -24,7 +24,7 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
 
 [features]
-default = ["serde_json", "cli", "thread-safe", "fuzzing"]
+default = ["serde_json", "cli", "thread-safe"]
 serde_json = ["dep:serde_json"]
 cli = ["dep:clap", "miette/fancy"]
 fuzzing = []

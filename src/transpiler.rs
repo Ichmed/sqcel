@@ -71,7 +71,7 @@ impl Transpiler {
     }
 
     pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
-        expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
+        dbg!(expr.to_sqcel(self)?).to_sql(self).map(|x| x.expr)
     }
 
     #[must_use]
@@ -342,9 +342,10 @@ mod test {
     use sea_query::{PostgresQueryBuilder, Query};
 
     use crate::{
+        intermediate::{ToIntermediate, ToSql},
         structure::{Column, Database, Schema, SqlLayout, Table},
         transpiler::Transpiler,
-        types::SqlType,
+        types::{JsonType, SqlType, Type, TypeConversion},
     };
 
     use super::TranspilerBuilder;
@@ -414,14 +415,6 @@ mod test {
 
     #[test]
     fn table_access() {
-        // let mut db = Database::default();
-        // db.with_schema("my_sch")
-        //     .with_table("my_tab")
-        //     .with_column("my_col", SqlType::Integer)
-        //     .with_column_alias("hidden", "my_alias", SqlType::Integer)
-        //     .finish()
-        //     .finish();
-
         let tp = TranspilerBuilder::create_empty()
             .layout({
                 let mut layout = SqlLayout::new(
@@ -429,6 +422,7 @@ mod test {
                         Schema::new("my_sch").table(
                             Table::new("my_tab")
                                 .column(Column::new("my_col", SqlType::Boolean))
+                                .column(Column::new("my_json", SqlType::JSON))
                                 .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
                         ),
                     ),
@@ -446,5 +440,43 @@ mod test {
             helper("my_sch.my_tab.my_col", &tp),
             r#"SELECT "my_sch"."my_tab"."my_col""#
         );
+    }
+
+    #[test]
+    fn table_access_dyn() {
+        let tp = TranspilerBuilder::create_empty()
+            .layout({
+                let mut layout = SqlLayout::new(
+                    Database::new().schema(
+                        Schema::new("my_sch").table(
+                            Table::new("my_tab")
+                                .column(Column::new("my_col", SqlType::Boolean))
+                                .column(Column::new("my_json", SqlType::JSON))
+                                .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
+                        ),
+                    ),
+                );
+                layout.enter_schema("my_sch").enter_table("my_tab");
+                layout
+            })
+            .build()
+            .unwrap();
+
+        let q = dbg!(
+            dbg!(cel_parser::parse("my_json").unwrap().to_sqcel(&tp))
+                .unwrap()
+                .to_sql(&tp)
+                .unwrap()
+        );
+
+        // let q = q.assume_is(JsonType::Any);
+
+        let sql = Query::select()
+            .expr(JsonType::Any.try_convert(q).unwrap().expr)
+            .take()
+            .build(PostgresQueryBuilder)
+            .0;
+
+        assert_eq!(sql, r#"SELECT "my_json""#);
     }
 }

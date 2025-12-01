@@ -70,7 +70,7 @@ impl ToSql for Map {
             }
             .take(),
         )
-        .assume_is(RecordSet(Default::default(), true).into()))
+        .assume_is(RecordSet(Default::default(), true)))
     }
 }
 

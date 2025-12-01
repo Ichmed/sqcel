@@ -132,8 +132,9 @@ impl ToSql for Variable {
             },
             Self::Atom(atom) => atom.to_sql(tp)?,
 
-            Self::SqlSubQuery(select_statement, _)
-            | Self::SqlSubQueryAtom(select_statement, _) => subquery(*select_statement.clone()),
+            Self::SqlSubQuery(select_statement, _) | Self::SqlSubQueryAtom(select_statement, _) => {
+                subquery(*select_statement.clone())
+            }
             Self::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),

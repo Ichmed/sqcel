@@ -401,6 +401,9 @@ impl ToSql for AccessChain {
 
     fn returntype(&self, tp: &Transpiler) -> Type {
         match (&self.head, self.idents.as_slice()) {
+            (None, [column, ..]) if tp.layout.column([column]).is_some() => {
+                tp.layout.column([column]).unwrap().1.unwrap_or_default()
+            }
             (None, [table, ..]) if tp.layout.table_asterisk([table]).is_some() => {
                 let types = tp.layout.table_columns([table]);
                 Type::RecordSet(Box::new(RecordSet(types.unwrap(), true)))
@@ -456,10 +459,7 @@ impl AccessChain {
                 ty: SqlType::Inferred.into(),
                 expr: outer.expr.cast_json_field(tail),
             },
-            None => TypedExpression {
-                ty: Type::RecordSet(Box::new(RecordSet(Default::default(), false))),
-                expr: outer.expr,
-            },
+            None => outer,
         })
     }
 

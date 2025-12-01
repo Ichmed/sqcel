@@ -26,8 +26,11 @@ pub struct TypedExpression {
 
 impl TypedExpression {
     #[must_use]
-    pub fn assume_is(&self, ty: Type) -> Self {
-        Self { ty, ..self.clone() }
+    pub fn assume_is(&self, ty: impl Into<Type>) -> Self {
+        Self {
+            ty: ty.into(),
+            ..self.clone()
+        }
     }
 }
 
@@ -43,7 +46,7 @@ pub enum ConversionError {
 
 impl From<RecordSet> for Type {
     fn from(value: RecordSet) -> Self {
-        Self::RecordSet(Box::new(value))
+        Self::RecordSet(value.into())
     }
 }
 
@@ -175,10 +178,7 @@ impl TypeConversion for JsonType {
                     Type::Json(from),
                     TypedExpression { expr, ty },
                 )),
-                (from, _) => Err(ConversionError::CantConvert(
-                    from.into(),
-                    to.clone().into(),
-                )),
+                (from, _) => Err(ConversionError::CantConvert(from.into(), to.clone().into())),
             },
             (
                 expr,
@@ -193,6 +193,10 @@ impl TypeConversion for JsonType {
             ) => Ok(TypedExpression {
                 expr: simple_func("to_jsonb", expr),
                 ty: Self::Number.into(),
+            }),
+            (expr, Type::Sql(SqlType::JSON), Self::Any) => Ok(TypedExpression {
+                expr: expr,
+                ty: Self::Any.into(),
             }),
             (expr, Type::Sql(SqlType::String), Self::Any | Self::String) => Ok(TypedExpression {
                 expr: simple_func("to_jsonb", expr.cast_as("text")),

@@ -71,7 +71,7 @@ impl Transpiler {
     }
 
     pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
-        dbg!(expr.to_sqcel(self)?).to_sql(self).map(|x| x.expr)
+        expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
     }
 
     #[must_use]
@@ -345,7 +345,7 @@ mod test {
         intermediate::{ToIntermediate, ToSql},
         structure::{Column, Database, Schema, SqlLayout, Table},
         transpiler::Transpiler,
-        types::{JsonType, SqlType, Type, TypeConversion},
+        types::{JsonType, SqlType, TypeConversion},
     };
 
     use super::TranspilerBuilder;
@@ -354,7 +354,7 @@ mod test {
     fn test() {
         let tp = Transpiler::new().build().unwrap();
 
-        let input = indoc!(r#"[1, 2, 3].map(x, int(x) > 1, int(x) + 1)"#);
+        let input = indoc!(r"[1, 2, 3].map(x, int(x) > 1, int(x) + 1)");
         let sql = helper(input, &tp);
         println!("{input}\n\n{sql}");
     }
@@ -386,7 +386,7 @@ mod test {
     fn proto_unknwon_field() {
         TranspilerBuilder::create_empty()
             .types(read_proto())
-            .transpile(r#"M{unknown: 5}"#)
+            .transpile(r"M{unknown: 5}")
             .unwrap();
     }
 
@@ -394,12 +394,12 @@ mod test {
     fn proto_fields() {
         let tp = Transpiler::new().types(read_proto()).build().unwrap();
         assert_eq!(
-            helper(r#"M{needed: 5, not_needed: 5}"#, &tp),
-            r#"SELECT jsonb_build_object('needed', 5, 'not_needed', 5)"#
+            helper(r"M{needed: 5, not_needed: 5}", &tp),
+            r"SELECT jsonb_build_object('needed', 5, 'not_needed', 5)"
         );
         assert_eq!(
-            helper(r#"M{needed: 5}"#, &tp),
-            r#"SELECT jsonb_build_object('needed', 5)"#
+            helper(r"M{needed: 5}", &tp),
+            r"SELECT jsonb_build_object('needed', 5)"
         );
     }
     #[test]
@@ -409,7 +409,7 @@ mod test {
             .types(read_proto())
             .build()
             .unwrap()
-            .transpile(r#"M{not_needed: 5}"#)
+            .transpile(r"M{not_needed: 5}")
             .unwrap();
     }
 
@@ -462,12 +462,12 @@ mod test {
             .build()
             .unwrap();
 
-        let q = dbg!(
-            dbg!(cel_parser::parse("my_json").unwrap().to_sqcel(&tp))
-                .unwrap()
-                .to_sql(&tp)
-                .unwrap()
-        );
+        let q = cel_parser::parse("my_json")
+            .unwrap()
+            .to_sqcel(&tp)
+            .unwrap()
+            .to_sql(&tp)
+            .unwrap();
 
         // let q = q.assume_is(JsonType::Any);
 

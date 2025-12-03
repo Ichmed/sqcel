@@ -1,5 +1,6 @@
 #![cfg(feature = "fuzzing")]
 #![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::missing_panics_doc)]
 /*!
  * Test suite to find/document places where the SQL conversion and the
  * official [CEL specification](https://github.com/google/cel-spec/blob/master/doc/langdef.md) diverge
@@ -46,7 +47,6 @@ async fn connect_pg() -> Client {
 async fn from_pg(src: &str) -> anyhow::Result<Value> {
     let tp = Transpiler::new().reduce(false).build().unwrap();
 
-    // let q = dbg!(dbg!(cel_parser::parse(src))?.to_sqcel(&tp))?.to_sql(&tp)?;
     let q = cel_parser::parse(src)?.to_sqcel(&tp)?.to_sql(&tp)?;
 
     let sql = Query::select()

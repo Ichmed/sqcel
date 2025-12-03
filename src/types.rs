@@ -141,26 +141,26 @@ impl TypeConversion for Type {
     /// The returned [`TypedExpression`] may have a type that is more
     /// specific than the one that was requested (e.g `JsonType::List` instead of
     /// `JsonType::Any` or the original type instead of `Unknown`)
-    fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
-        match self {
-            Self::Json(json_type) => json_type.try_convert(expr),
-            Self::RecordSet(_) if matches!(expr.ty, Self::RecordSet(_)) => Ok(expr),
-            Self::RecordSet(_) if expr.ty == Self::Json(JsonType::List) => Ok(TypedExpression {
-                expr: simple_func("jsonb_array_elements", expr.expr),
-                ty: self.clone(),
-            }),
-            _ => Err(ConversionError::UnimplementedConvertion(
-                expr.ty,
-                self.clone(),
-            )),
+    fn try_convert(
+        &self,
+        TypedExpression { expr, ty }: TypedExpression,
+    ) -> Result<TypedExpression, ConversionError> {
+        match (self, ty) {
+            (a, ty) if *a == ty => Ok(TypedExpression { expr, ty }),
+            (Self::Json(json_type), ty) => json_type.try_convert(TypedExpression { expr, ty }),
+            (Self::RecordSet(_), Self::Json(JsonType::List) | Self::Sql(SqlType::JSON)) => {
+                Ok(TypedExpression {
+                    expr: simple_func("jsonb_array_elements", expr),
+                    ty: self.clone(),
+                })
+            }
+            (_, ty) => Err(ConversionError::UnimplementedConvertion(ty, self.clone())),
         }
     }
 }
 
 impl TypeConversion for JsonType {
     fn try_convert(&self, expr: TypedExpression) -> Result<TypedExpression, ConversionError> {
-        let ty = Type::Json(self.clone());
-
         match (expr.expr, expr.ty, self) {
             (
                 SimpleExpr::Binary(a, BinOper::PgOperator(PgBinOper::CastJsonField), b),
@@ -172,11 +172,20 @@ impl TypeConversion for JsonType {
             }),
             (expr, ty @ Type::Json(_), Self::Any) => Ok(TypedExpression { expr, ty }),
             (expr, Type::Json(from), to) => match (from, to) {
-                (from, to) if from == *to => Ok(TypedExpression { expr, ty }),
-                (_, Self::Any) => Ok(TypedExpression { expr, ty }),
+                (from, to) if from == *to => Ok(TypedExpression {
+                    expr,
+                    ty: self.clone().into(),
+                }),
+                (_, Self::Any) => Ok(TypedExpression {
+                    expr,
+                    ty: self.clone().into(),
+                }),
                 (from @ Self::Any, _) => Err(ConversionError::UnsafeConversion(
                     Type::Json(from),
-                    TypedExpression { expr, ty },
+                    TypedExpression {
+                        expr,
+                        ty: self.clone().into(),
+                    },
                 )),
                 (from, _) => Err(ConversionError::CantConvert(from.into(), to.clone().into())),
             },
@@ -195,7 +204,7 @@ impl TypeConversion for JsonType {
                 ty: Self::Number.into(),
             }),
             (expr, Type::Sql(SqlType::JSON), Self::Any) => Ok(TypedExpression {
-                expr: expr,
+                expr,
                 ty: Self::Any.into(),
             }),
             (expr, Type::Sql(SqlType::String), Self::Any | Self::String) => Ok(TypedExpression {

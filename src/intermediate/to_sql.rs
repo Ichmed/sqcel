@@ -36,7 +36,7 @@ pub trait ToSql {
                         "SQCEL should never generate a statement that is not a select statement"
                     ),
                 },
-                x => dbg!(Query::select().expr_as(x, alias).take()),
+                x => Query::select().expr_as(x, alias).take(),
             },
         )
     }

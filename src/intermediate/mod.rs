@@ -456,7 +456,7 @@ impl AccessChain {
 
         Ok(match tail {
             Some(tail) => TypedExpression {
-                ty: SqlType::Inferred.into(),
+                ty: SqlType::JSON.into(),
                 expr: outer.expr.cast_json_field(tail),
             },
             None => outer,

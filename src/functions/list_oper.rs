@@ -146,7 +146,7 @@ mod test {
 
         assert_eq!(
             sql,
-            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS integer) = -1) AS bool) FROM (SELECT jsonb_array_elements("my_data" ->> 'list') AS "x") AS "x")"#
+            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS integer) = -1) AS bool) FROM (SELECT jsonb_array_elements("my_data" -> 'list') AS "x") AS "x")"#
         );
     }
 

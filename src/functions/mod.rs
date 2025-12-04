@@ -21,7 +21,10 @@ use last::Latest;
 use list_oper::{all, any};
 use map::Map;
 
-use sea_query::{Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement};
+use sea_query::{
+    BinOper, Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement,
+    extension::postgres::PgBinOper,
+};
 
 pub trait Function: ToSql + Any + Send + Sync {}
 
@@ -195,9 +198,19 @@ impl Function for Cast {}
 
 impl ToSql for Cast {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
+        let TypedExpression { expr, ty: _ } = self.0.to_sql(tp)?;
+
+        let expr =
+            if let SqlExpression::Binary(a, BinOper::PgOperator(PgBinOper::GetJsonField), b) = expr
+            {
+                SqlExpression::Binary(a, BinOper::PgOperator(PgBinOper::CastJsonField), b)
+            } else {
+                expr
+            };
+
         Ok(TypedExpression {
             ty: self.2.clone(),
-            expr: self.0.to_sql(tp)?.expr.cast_as(alias(self.1)),
+            expr: expr.cast_as(alias(self.1)),
         })
     }
     fn returntype(&self, _tp: &Transpiler) -> Type {

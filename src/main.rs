@@ -2,6 +2,7 @@ pub mod functions;
 pub mod hacks;
 pub mod intermediate;
 pub mod magic;
+pub mod sql_extensions;
 pub mod structure;
 pub mod transpiler;
 pub mod types;

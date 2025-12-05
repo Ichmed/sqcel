@@ -4,6 +4,7 @@ pub mod to_sql;
 use crate::{
     Result, Transpiler,
     functions::{Function, subquery},
+    sql_extensions::SqlExtension,
     transpiler::{ParseError, alias},
     types::{JsonType, RecordSet, SqlType, Type, TypedExpression},
     variables::{Atom, Object, Variable},
@@ -484,8 +485,10 @@ impl ToSql for Expression {
             ExpressionInner::Variable(variable) => variable.to_sql(tp)?,
             ExpressionInner::Arithmetic(a, op, b) => TypedExpression {
                 ty: Type::Sql(SqlType::Number),
-                expr: SimpleExpr::Binary(
-                    Box::new(a.to_sql(tp)?.expr),
+                expr: adjust_bin_oper(
+                    tp,
+                    a,
+                    b,
                     match op {
                         ArithmeticOp::Add => BinOper::Add,
                         ArithmeticOp::Subtract => BinOper::Sub,
@@ -493,13 +496,15 @@ impl ToSql for Expression {
                         ArithmeticOp::Multiply => BinOper::Mul,
                         ArithmeticOp::Modulus => BinOper::Mod,
                     },
-                    Box::new(b.to_sql(tp)?.expr),
-                ),
+                )?,
             },
+
             ExpressionInner::Relation(a, op, b) => TypedExpression {
                 ty: Type::Sql(SqlType::Boolean),
-                expr: SimpleExpr::Binary(
-                    Box::new(a.to_sql(tp)?.expr),
+                expr: adjust_bin_oper(
+                    tp,
+                    a,
+                    b,
                     match op {
                         RelationOp::LessThan => BinOper::SmallerThan,
                         RelationOp::LessThanEq => BinOper::SmallerThanOrEqual,
@@ -511,8 +516,7 @@ impl ToSql for Expression {
                             return Err(ParseError::Todo("IN operator for lists, subqueries etc"));
                         }
                     },
-                    Box::new(b.to_sql(tp)?.expr),
-                ),
+                )?,
             },
             ExpressionInner::Ternary(r#if, then, r#else) => TypedExpression {
                 ty: Type::Sql(SqlType::Boolean),
@@ -558,6 +562,33 @@ impl ToSql for Expression {
     fn returntype(&self, _tp: &Transpiler) -> Type {
         Type::Unknown
     }
+}
+
+fn adjust_bin_oper(
+    tp: &Transpiler,
+    a: &Expression,
+    b: &Expression,
+    bin_oper: BinOper,
+) -> Result<SimpleExpr> {
+    let a = a.to_sql(tp)?;
+    let b = b.to_sql(tp)?;
+    Ok(
+        if !matches!(a.ty, Type::Json(_) | Type::Sql(SqlType::JSON))
+            || !matches!(b.ty, Type::Json(_) | Type::Sql(SqlType::JSON))
+        {
+            SimpleExpr::Binary(
+                Box::new(a.expr.into_json_cast()),
+                bin_oper,
+                Box::new(b.expr.into_json_cast()),
+            )
+        } else {
+            SimpleExpr::Binary(
+                Box::new(a.expr.into_json_get()),
+                bin_oper,
+                Box::new(b.expr.into_json_get()),
+            )
+        },
+    )
 }
 
 impl Expression {

@@ -12,6 +12,7 @@ use crate::{
     Transpiler,
     functions::slice::First,
     intermediate::{Expression, ExpressionInner, Rc, ToSql},
+    sql_extensions::SqlExtension,
     transpiler::{ParseError, Result, alias},
     types::{SqlType, Type, TypedExpression},
 };
@@ -21,10 +22,7 @@ use last::Latest;
 use list_oper::{all, any};
 use map::Map;
 
-use sea_query::{
-    BinOper, Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement,
-    extension::postgres::PgBinOper,
-};
+use sea_query::{Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement};
 
 pub trait Function: ToSql + Any + Send + Sync {}
 
@@ -200,17 +198,9 @@ impl ToSql for Cast {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         let TypedExpression { expr, ty: _ } = self.0.to_sql(tp)?;
 
-        let expr =
-            if let SqlExpression::Binary(a, BinOper::PgOperator(PgBinOper::GetJsonField), b) = expr
-            {
-                SqlExpression::Binary(a, BinOper::PgOperator(PgBinOper::CastJsonField), b)
-            } else {
-                expr
-            };
-
         Ok(TypedExpression {
             ty: self.2.clone(),
-            expr: expr.cast_as(alias(self.1)),
+            expr: expr.into_json_cast().cast_as(alias(self.1)),
         })
     }
     fn returntype(&self, _tp: &Transpiler) -> Type {

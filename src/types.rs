@@ -237,6 +237,7 @@ impl TypeConversion for JsonType {
         }
     }
 }
+
 impl From<JsonType> for Type {
     fn from(value: JsonType) -> Self {
         Self::Json(value)

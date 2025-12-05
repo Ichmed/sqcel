@@ -1,3 +1,4 @@
+pub mod sql_extensions;
 pub mod structure;
 mod transpiler;
 

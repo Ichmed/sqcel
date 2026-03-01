@@ -1,3 +1,6 @@
+pub mod alias;
+pub mod views;
+
 use crate::{
     functions::{
         WrongFunctionArgs,
@@ -5,6 +8,10 @@ use crate::{
     },
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
     structure::{Column, SqlLayout, Table},
+    transpiler::{
+        alias::{IncAlias, KeyValueAlias, TableAlias},
+        views::ViewSource,
+    },
     types::{ConversionError, Type},
     variables::Variable,
 };
@@ -15,7 +22,7 @@ use miette::{Diagnostic, LabeledSpan};
 use sea_query::{
     Alias, Asterisk, ColumnRef, DynIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
 };
-use std::{collections::HashMap, iter::once};
+use std::{collections::HashMap, iter::once, sync::RwLock};
 use thiserror::Error;
 
 /// A simple example
@@ -57,6 +64,8 @@ pub struct Transpiler {
     /// Should the transpiler try to reduce CEL expressions
     /// before translating them into SQL
     pub(crate) reduce: bool,
+
+    pub(crate) alias_index: Rc<RwLock<usize>>,
 }
 
 impl Transpiler {
@@ -71,6 +80,9 @@ impl Transpiler {
     }
 
     pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
+        if let Ok(mut counter) = self.alias_index.write() {
+            *counter = 0;
+        }
         expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
     }
 
@@ -86,6 +98,7 @@ impl Transpiler {
             reduce,
             functions,
             layout,
+            alias_index,
         } = self;
         TranspilerBuilder {
             variables: Some(variables.clone()),
@@ -96,6 +109,7 @@ impl Transpiler {
             reduce: Some(*reduce),
             functions: Some(functions.clone()),
             layout: Some(layout.clone()),
+            alias_index: Some(alias_index.clone()),
         }
     }
 
@@ -110,9 +124,45 @@ impl Transpiler {
     }
 
     #[must_use]
+    pub fn enter_anonymous_schema(mut self, content: HashMap<String, Table>) -> Self {
+        self.layout.enter_anonymous_schema(content);
+        self
+    }
+
+    #[must_use]
     pub fn enter_anonymous_table(mut self, content: HashMap<String, Column>) -> Self {
         self.layout.enter_anonymous_table(content);
         self
+    }
+
+    #[must_use]
+    pub(crate) fn alias(&self) -> IncAlias {
+        let mut i = match self.alias_index.write() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        *i += 1;
+        IncAlias(*i)
+    }
+
+    #[must_use]
+    pub(crate) fn alias_key_value(&self) -> KeyValueAlias {
+        TableAlias(Rc::new((self.alias().0, [self.alias(), self.alias()])))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn quick(data: crate::structure::LayoutTuple<'static>) -> Self {
+        let mut r = Self::new();
+        r.layout(data.clone().into());
+
+        if let Some((name, tables)) = data.first() {
+            r.enter_schema(name);
+            if let Some((name, _)) = tables.first() {
+                r.enter_table(name);
+            }
+        }
+
+        r.build().unwrap()
     }
 }
 
@@ -244,20 +294,22 @@ impl TranspilerBuilder {
         self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
     }
 
-    pub fn view(&mut self, name: &str, from: &str, selector: SqlExpr) -> Result<&mut Self> {
+    #[allow(clippy::needless_pass_by_value, reason = "To allow &str")]
+    pub fn view(
+        &mut self,
+        name: &str,
+        from: impl ViewSource,
+        selector: SqlExpr,
+    ) -> Result<&mut Self> {
         let x = Query::select()
             .column(Asterisk)
-            .from(alias(from))
+            .from(alias(from.table_name()))
             .and_where(selector)
             .take();
 
-        let columns = self
-            .layout
-            .get_or_insert_default()
-            .table_columns([from])
-            .ok_or(ParseError::TableNotFound(from.to_owned()))?;
+        let columns = from.columns(self)?;
 
-        self.var(name, Variable::SqlSubQuery(Box::new(x), columns));
+        self.var(name, Variable::SqlSubQuery(Box::new(x), columns.clone()));
         Ok(self)
     }
 }
@@ -285,7 +337,7 @@ pub enum ParseError {
     BugBakedFunction,
     #[error("Unknown message type `{}`", .0)]
     UnknownType(String),
-    #[error("Unknown field `{}` on type `{}`", .0, .1)]
+    #[error("Unknown field {}`{}`", .1, .0)]
     UnknownField(String, String),
     #[error("Message of type `{}` is missing the fields: {:?}", .0, .1)]
     MissingFields(String, Vec<String>),
@@ -308,6 +360,9 @@ pub enum ParseError {
 
     #[error("Column \"{}\" could not be found in the layout", .0)]
     ColumnNotFound(String),
+
+    #[error("Function {} does not accept type {:?}", .0, .1)]
+    WrongFunctionArgType(String, Type),
 
     #[error("TODO: {}", .0)]
     Todo(&'static str),
@@ -472,7 +527,7 @@ mod test {
         // let q = q.assume_is(JsonType::Any);
 
         let sql = Query::select()
-            .expr(JsonType::Any.try_convert(q).unwrap().expr)
+            .expr(JsonType::Any.try_convert(&tp, q).unwrap().expr)
             .take()
             .build(PostgresQueryBuilder)
             .0;

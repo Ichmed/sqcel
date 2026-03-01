@@ -8,7 +8,6 @@ pub mod transpiler;
 pub mod types;
 pub mod variables;
 
-use crate::transpiler::Transpiler;
 use clap::Parser;
 use miette::IntoDiagnostic;
 use miette::miette;
@@ -16,8 +15,7 @@ use sqcel::PostgresQueryBuilder;
 use std::{io::BufRead, path::PathBuf};
 use variables::Variable;
 
-pub use transpiler::ParseError as Error;
-pub use transpiler::Result;
+pub use transpiler::{ParseError, Result, Transpiler};
 
 #[derive(clap::Parser)]
 struct Cli {
@@ -108,6 +106,7 @@ impl Cli {
             accept_unknown_types,
             trigger_mode,
             reduce: !no_reduce,
+
             ..Default::default()
         }
         .to_builder()

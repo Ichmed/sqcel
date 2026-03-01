@@ -1,6 +1,7 @@
 use crate::{
     Transpiler,
     intermediate::{Expression, Ident},
+    sql_extensions::SqlExtension,
     structure::Column,
     transpiler::alias,
     types::{SqlType, Type, TypedExpression},
@@ -49,7 +50,7 @@ impl ToSql for ListOper {
         // value, the static value can be moved outside the subquery
 
         let varname = self.var.to_string();
-        let source = self.source.to_record_set(tp, alias(&varname))?;
+        let source = self.source.to_record_set_with_alias(tp, alias(&varname))?;
         let inner_tp = tp
             .clone()
             .enter_anonymous_table([(varname.clone(), Column::new(varname, SqlType::JSON))].into());
@@ -64,7 +65,7 @@ impl ToSql for ListOper {
             .predicate
             .to_sql(&inner_tp)?
             .expr
-            .cast_as(alias("bool"));
+            .cast_as(SqlType::Boolean);
 
         let stream = SimpleExpr::SubQuery(
             Some(self.oper),
@@ -76,10 +77,7 @@ impl ToSql for ListOper {
             )),
         );
 
-        Ok(TypedExpression {
-            ty: Type::Sql(SqlType::Boolean),
-            expr: compare.eq(stream),
-        })
+        Ok(compare.eq(stream).with_type(SqlType::Boolean))
     }
 
     fn returntype(&self, _tp: &Transpiler) -> Type {
@@ -146,7 +144,7 @@ mod test {
 
         assert_eq!(
             sql,
-            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS integer) = -1) AS bool) FROM (SELECT jsonb_array_elements("my_data" -> 'list') AS "x") AS "x")"#
+            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS int) = -1) AS bool) FROM (SELECT jsonb_array_elements("my_data" -> 'list') AS "x") AS "x")"#
         );
     }
 

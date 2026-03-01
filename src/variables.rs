@@ -3,10 +3,10 @@ use crate::{
     functions::subquery,
     intermediate::{AccessChain, Expression, ToSql},
     structure::Column,
-    transpiler::{ParseError, Result, alias},
+    transpiler::{ParseError, Result},
     types::{JsonType, RecordSet, Type, TypedExpression},
 };
-use sea_query::{Alias, Func, Query, SelectStatement, SimpleExpr};
+use sea_query::{Alias, DynIden, Func, IntoIden, Query, SelectStatement, SimpleExpr};
 use std::{collections::HashMap, sync::Arc};
 
 #[derive(Clone, Debug)]
@@ -132,8 +132,9 @@ impl ToSql for Variable {
             },
             Self::Atom(atom) => atom.to_sql(tp)?,
 
-            Self::SqlSubQuery(select_statement, _) | Self::SqlSubQueryAtom(select_statement, _) => {
-                subquery(*select_statement.clone())
+            Self::SqlSubQuery(select_statement, types)
+            | Self::SqlSubQueryAtom(select_statement, types) => {
+                subquery(*select_statement.clone()).assume_is(RecordSet::with_cols(types.clone()))
             }
             Self::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
@@ -148,7 +149,7 @@ impl ToSql for Variable {
             Self::List(_) => JsonType::List.into(),
             Self::Atom(atom) => atom.returntype(tp),
             Self::SqlSubQuery(_, cols) | Self::SqlSubQueryAtom(_, cols) => {
-                Type::RecordSet(Box::new(RecordSet(cols.clone(), true)))
+                Type::RecordSet(Box::new(RecordSet::with_cols(cols.clone())))
             }
             Self::SqlAny(_) => Type::Unknown,
         }
@@ -169,7 +170,11 @@ impl Variable {
     }
 
     /// Turn this into a recordset
-    pub fn to_record_set(&self, tp: &Transpiler, a: &str) -> Result<SelectStatement> {
+    pub fn to_record_set(&self, tp: &Transpiler) -> Result<SelectStatement> {
+        self.to_record_set_with_alias(tp, tp.alias().into_iden())
+    }
+
+    pub fn to_record_set_with_alias(&self, tp: &Transpiler, a: DynIden) -> Result<SelectStatement> {
         Ok(match self {
             Self::SqlSubQuery(select_statement, _) => *select_statement.clone(),
             Self::List(content) if content.iter().all(Expression::is_object) => {
@@ -178,8 +183,8 @@ impl Variable {
 
             Self::List(_) => Query::select()
                 .expr_as(
-                    Func::cust(alias("jsonb_array_elements")).arg(self.to_sql(tp)?.expr),
-                    alias(a),
+                    Func::cust("jsonb_array_elements").arg(self.to_sql(tp)?.expr),
+                    a,
                 )
                 .take(),
             _ => todo!("Missing into record set"),

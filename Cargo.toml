@@ -22,6 +22,7 @@ thiserror = "2.0.12"
 miette = "7.6.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
+tracing = "0.1.43"
 
 [features]
 default = ["serde_json", "cli", "thread-safe"]

@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use crate::types::{SqlType, Type};
+use crate::{
+    transpiler::{TranspilerBuilder, TranspilerBuilderError, views::ViewSource},
+    types::{SqlType, Type},
+};
 use sea_query::{ColumnRef, TableRef};
 
 use crate::transpiler::alias;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SqlLayout {
     database: Database,
     schema: Option<Schema>,
@@ -22,7 +25,52 @@ impl SqlLayout {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+pub(crate) type LayoutTuple<'a> = Vec<(&'a str, Vec<(&'a str, Vec<(&'a str, SqlType)>)>)>;
+
+impl From<LayoutTuple<'static>> for SqlLayout {
+    fn from(value: LayoutTuple) -> Self {
+        let mut db = Database::new();
+        for (name, schema) in value {
+            let mut sch = Schema::new(name);
+            for (name, table) in schema {
+                let mut tab = Table::new(name);
+                for column in table {
+                    tab = tab.column(column);
+                }
+                sch = sch.table(tab);
+            }
+            db = db.schema(sch);
+        }
+        Self::new(db)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        structure::{Column, Database, Schema, SqlLayout, Table},
+        types::SqlType,
+    };
+
+    #[test]
+    fn quick_layout() {
+        let tpf = SqlLayout::from(vec![(
+            "sch",
+            vec![("foo", vec![("number", SqlType::Integer)])],
+        )]);
+
+        let tp = SqlLayout::new(
+            Database::new().schema(
+                Schema::new("sch")
+                    .table(Table::new("foo").column(Column::new("number", SqlType::Integer))),
+            ),
+        );
+
+        assert_eq!(tpf, tp);
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Database {
     layout: HashMap<String, Schema>,
 }
@@ -35,7 +83,7 @@ impl Database {
 
     #[must_use]
     pub fn schema(self, schema: Schema) -> Self {
-        self.schema_alias(schema.name.clone(), schema)
+        self.schema_alias(schema.1.clone(), schema)
     }
 
     #[must_use]
@@ -46,20 +94,14 @@ impl Database {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Schema {
-    layout: HashMap<String, Table>,
-    name: String,
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Schema(HashMap<String, Table>, String);
 
 impl Schema {
     #[must_use]
     #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn new(name: impl ToString) -> Self {
-        Self {
-            layout: Default::default(),
-            name: name.to_string(),
-        }
+        Self(Default::default(), name.to_string())
     }
 
     #[must_use]
@@ -70,16 +112,17 @@ impl Schema {
     #[must_use]
     #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
     pub fn table_alias(mut self, name: impl ToString, table: Table) -> Self {
-        self.layout.insert(name.to_string(), table);
+        self.0.insert(name.to_string(), table);
         self
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Table {
     layout: HashMap<String, Column>,
     name: String,
 }
+
 impl Table {
     #[must_use]
     #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
@@ -111,6 +154,20 @@ impl Table {
         self
     }
 }
+
+impl ViewSource for Table {
+    fn table_name(&self) -> &str {
+        &self.name
+    }
+
+    fn columns<'a>(
+        &'a self,
+        _: &'a TranspilerBuilder,
+    ) -> Result<&'a HashMap<String, Column>, TranspilerBuilderError> {
+        Ok(&self.layout)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     name: String,
@@ -125,6 +182,12 @@ impl Column {
             name: name.to_string(),
             ty,
         }
+    }
+}
+
+impl<T: ToString> From<(T, Self)> for Column {
+    fn from((_, value): (T, Self)) -> Self {
+        value
     }
 }
 
@@ -146,15 +209,12 @@ impl SqlLayout {
         self.table = self
             .schema
             .as_ref()
-            .and_then(|x| x.layout.get(&name.to_string()).cloned());
+            .and_then(|x| x.0.get(&name.to_string()).cloned());
         self
     }
 
     pub fn enter_anonymous_schema(&mut self, layout: HashMap<String, Table>) -> &mut Self {
-        self.schema = Some(Schema {
-            layout,
-            name: "__anonymous__".to_owned(),
-        });
+        self.schema = Some(Schema(layout, "__anonymous__".to_owned()));
         self
     }
 
@@ -179,33 +239,33 @@ impl SqlLayout {
             (None, None, Some(col)) => self.table.as_ref()?.layout.get(&col).map(|col| {
                 (
                     ColumnRef::Column(alias(col.name.clone())),
-                    Some(col.ty.clone().into()),
+                    Some(col.ty.into()),
                 )
             }),
             (None, Some(table), Some(col)) => {
-                self.schema.as_ref()?.layout.get(&table).and_then(|table| {
+                self.schema.as_ref()?.0.get(&table).and_then(|table| {
                     table.layout.get(&col).map(|col| {
                         (
                             ColumnRef::TableColumn(
                                 alias(table.name.clone()),
                                 alias(col.name.clone()),
                             ),
-                            Some(col.ty.clone().into()),
+                            Some(col.ty.into()),
                         )
                     })
                 })
             }
             (Some(schema), Some(table), Some(col)) => {
                 self.database.layout.get(&schema).and_then(|schema| {
-                    schema.layout.get(&table).and_then(|table| {
+                    schema.0.get(&table).and_then(|table| {
                         table.layout.get(&col).map(|col| {
                             (
                                 ColumnRef::SchemaTableColumn(
-                                    alias(schema.name.clone()),
+                                    alias(schema.1.clone()),
                                     alias(table.name.clone()),
                                     alias(col.name.clone()),
                                 ),
-                                Some(col.ty.clone().into()),
+                                Some(col.ty.into()),
                             )
                         })
                     })
@@ -224,12 +284,12 @@ impl SqlLayout {
             (None, Some(table)) => self
                 .schema
                 .as_ref()?
-                .layout
+                .0
                 .get(&table)
                 .map(|table| TableRef::Table(alias(table.name.clone()))),
             (Some(schema), Some(table)) => self.database.layout.get(&schema).and_then(|schema| {
-                schema.layout.get(&table).map(|table| {
-                    TableRef::SchemaTable(alias(schema.name.clone()), alias(table.name.clone()))
+                schema.0.get(&table).map(|table| {
+                    TableRef::SchemaTable(alias(schema.1.clone()), alias(table.name.clone()))
                 })
             }),
             _ => None,
@@ -248,7 +308,7 @@ impl SqlLayout {
             (None, Some(table)) => self
                 .schema
                 .as_ref()?
-                .layout
+                .0
                 .get(&table)
                 .map(|table| ColumnRef::TableAsterisk(alias(table.name.clone()))),
             _ => None,
@@ -258,13 +318,13 @@ impl SqlLayout {
     pub fn table_columns(
         &self,
         name: impl IntoIterator<Item = impl ToString>,
-    ) -> Option<HashMap<String, Column>> {
+    ) -> Option<&HashMap<String, Column>> {
         let mut it: Vec<_> = name.into_iter().collect();
         let b = it.pop().map(|x| x.to_string());
         let a = it.pop().map(|x| x.to_string());
 
         match (a, b) {
-            (None, Some(table)) => Some(self.schema.as_ref()?.layout.get(&table)?.layout.clone()),
+            (None, Some(table)) => Some(&self.schema.as_ref()?.0.get(&table)?.layout),
             _ => None,
         }
     }

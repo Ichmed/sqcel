@@ -1,4 +1,3 @@
-
 use crate::{
     functions::Function,
     intermediate::{Expression, ToSql},
@@ -15,7 +14,7 @@ impl Function for Json {}
 
 impl ToSql for Json {
     fn to_sql(&self, tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Ok(JsonType::Any.try_convert(self.0.to_sql(tp)?)?)
+        Ok(JsonType::Any.try_convert(tp, self.0.to_sql(tp)?)?)
     }
 
     fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {

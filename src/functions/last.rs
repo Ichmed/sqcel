@@ -32,7 +32,7 @@ impl Function for Latest {}
 
 impl ToSql for Latest {
     fn returntype(&self, _tp: &Transpiler) -> Type {
-        RecordSet(Default::default(), true).into()
+        RecordSet::default().into()
     }
 
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {

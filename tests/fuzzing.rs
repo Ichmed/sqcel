@@ -39,7 +39,9 @@ use tokio_postgres::{Client, NoTls};
 async fn connect_pg() -> Client {
     let con_string = env::var("POSTGRES_CON_STRING")
         .unwrap_or("host=localhost user=postgres password=password".to_owned());
-    let (client, connection) = tokio_postgres::connect(&con_string, NoTls).await.unwrap();
+    let (client, connection) = tokio_postgres::connect(&con_string, NoTls)
+        .await
+        .expect("Failed to connect to postgres. You may need to specify a postgress connection with the POSTGRES_CON_STRING environment variable");
     tokio::spawn(connection);
     client
 }
@@ -50,10 +52,9 @@ async fn from_pg(src: &str) -> anyhow::Result<Value> {
     let q = cel_parser::parse(src)?.to_sqcel(&tp)?.to_sql(&tp)?;
 
     let sql = Query::select()
-        .expr(JsonType::Any.try_convert(q).unwrap().expr)
+        .expr(JsonType::Any.try_convert(&tp, q).unwrap().expr)
         .take()
-        .build(PostgresQueryBuilder)
-        .0;
+        .to_string(PostgresQueryBuilder);
 
     eprintln!("{sql}");
 
@@ -212,7 +213,9 @@ good!(
     construct_empty_object r#"{}"# == json!({});
     construct_object r#"{"a": 1}"# == json!({"a": 1});
     construct_nested_object r#"{"a": {"b": 1337}}"# == json!({"a": {"b": 1337}});
-    extract_int r#"int({"foo": 1}.foo)"# == 1
+    extract_int r#"int({"foo": 1}.foo)"# == 1;
+
+    string_index r#"{"a": 5}["a"]"# == 5;
 );
 
 // disabled until .proto file is included

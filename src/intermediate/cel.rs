@@ -58,20 +58,20 @@ impl ToIntermediate for CelExpression {
             }
             Self::Or(a, b) => ExpressionInner::Or(box_ex!(tp, a), box_ex!(tp, b)),
             Self::And(a, b) => ExpressionInner::And(box_ex!(tp, a), box_ex!(tp, b)),
-            Self::Unary(unary_op, e) => {
-                ExpressionInner::Unary(unary_op.clone(), box_ex!(tp, e))
-            }
+            Self::Unary(unary_op, e) => ExpressionInner::Unary(unary_op.clone(), box_ex!(tp, e)),
             Self::Member(expression, member) => resolve_member(tp, expression, member)?,
-            Self::FunctionCall(name, rec, args) => {
-                ExpressionInner::FunctionCall(functions::get(
-                    tp,
-                    &name.to_sqcel(tp)?,
-                    rec.as_ref().map(|rec| rec.to_sqcel(tp)).transpose()?,
-                    args.iter()
-                        .map(|arg| arg.to_sqcel(tp))
-                        .collect::<Result<_>>()?,
-                )?)
-            }
+            Self::FunctionCall(name, rec, args) => ExpressionInner::FunctionCall(functions::get(
+                tp,
+                &name.to_sqcel(tp)?,
+                rec.as_ref()
+                    .map(|rec| rec.to_sqcel(tp))
+                    .transpose()?
+                    .as_ref(),
+                &args
+                    .iter()
+                    .map(|arg| arg.to_sqcel(tp))
+                    .collect::<Result<Vec<_>>>()?,
+            )?),
             Self::List(expressions) => ExpressionInner::Variable(Variable::List(
                 expressions
                     .iter()
@@ -94,9 +94,7 @@ impl ToIntermediate for CelExpression {
                 CelAtom::Bool(b) => Atom::Bool(*b),
                 CelAtom::Null => Atom::Null,
             })),
-            Self::Ident(i) => {
-                ExpressionInner::Access(AccessChain::new(vec![Ident(i.clone())]))
-            }
+            Self::Ident(i) => ExpressionInner::Access(AccessChain::new(vec![Ident(i.clone())])),
         }
         .into_anonymous())
     }
@@ -129,13 +127,7 @@ fn resolve_member(
                 }),
             }
         }
-        Member::Index(index) => ExpressionInner::Index(
-            box_ex!(tp, expression),
-            match **index {
-                CelExpression::Atom(cel_parser::Atom::Int(i)) => i,
-                _ => return Err(Error::Todo("None int index")),
-            },
-        ),
+        Member::Index(index) => ExpressionInner::Index(box_ex!(tp, expression), box_ex!(tp, index)),
         Member::Fields(items) => ExpressionInner::Variable(Variable::Object(Object {
             data: items
                 .iter()

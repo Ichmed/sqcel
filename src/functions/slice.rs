@@ -4,7 +4,6 @@ use crate::{
     Result, Transpiler,
     functions::{Function, subquery},
     intermediate::{Expression, Rc, ToSql},
-    transpiler::alias,
     types::{Type, TypedExpression},
 };
 
@@ -24,7 +23,7 @@ impl ToSql for First {
         Ok(subquery(
             Query::select()
                 .column(Asterisk)
-                .from_subquery(self.0.to_record_set(tp, alias("_"))?, alias("_"))
+                .from_subquery(self.0.to_record_set(tp)?, tp.alias())
                 .limit(1)
                 .take(),
         ))

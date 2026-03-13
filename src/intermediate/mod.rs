@@ -1,36 +1,31 @@
+pub mod access_chain;
 pub mod cel;
 pub mod to_sql;
+pub mod variables;
 
 use crate::{
-    Result, Transpiler,
-    functions::{Function, subquery},
+    Error, Result, Transpiler,
+    functions::{Function, iter::Iterable},
+    intermediate::{
+        access_chain::AccessChain,
+        to_sql::try_iterate_fallback,
+        variables::{Atom, Object, Variable},
+    },
     sql_extensions::SqlExtension,
-    transpiler::{ParseError, alias},
-    types::{JsonType, RecordSet, SqlType, Type, TypedExpression},
-    variables::{Atom, Object, Variable},
+    transpiler::str_alias,
+    types::{SqlType, Type, TypedExpression, json::JsonType},
+    types2::Cell,
 };
-use cel_interpreter::{
-    Value as CelValue,
-    objects::{Key, Map},
-};
+use cel_interpreter::{Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
 use sea_query::{
-    Asterisk, BinOper, CaseStatement, ExprTrait, Func, IntoIden, Query, SelectStatement,
-    SimpleExpr, TableRef, Value, extension::postgres::PgExpr,
+    BinOper, CaseStatement, DynIden, ExprTrait, IntoIden, SimpleExpr, Value,
+    extension::postgres::PgExpr,
 };
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    fmt::{Debug, Display},
-    iter::once,
-    sync::Arc,
-};
+use std::fmt::{Debug, Display};
 pub use to_sql::ToSql;
 
-#[cfg(not(feature = "thread-safe"))]
-pub type Rc<T> = std::rc::Rc<T>;
-#[cfg(feature = "thread-safe")]
-pub type Rc<T> = std::sync::Arc<T>;
+pub type Rc<T> = sea_query::RcOrArc<T>;
 
 #[derive(Clone, Debug)]
 pub struct Expression {
@@ -75,13 +70,13 @@ impl Expression {
     pub fn returntype(&self, tp: &Transpiler) -> Type {
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
-            ExpressionInner::Index(expression, _) => expression.returntype(tp).inner(),
+            ExpressionInner::Index(expression, _) => expression.returntype(tp),
             ExpressionInner::Variable(variable) => variable.returntype(tp),
-            ExpressionInner::Arithmetic(_, _, _) => SqlType::Number.into(),
-            ExpressionInner::Relation(_, _, _) => SqlType::Boolean.into(),
+            ExpressionInner::Arithmetic(a, _, _) => a.returntype(tp),
+            ExpressionInner::Relation(_, _, _) => Type::Column(None, SqlType::Boolean),
             ExpressionInner::Ternary(_, expression1, _) => expression1.returntype(tp),
-            ExpressionInner::Or(_, _) => SqlType::Boolean.into(),
-            ExpressionInner::And(_, _) => SqlType::Boolean.into(),
+            ExpressionInner::Or(_, _) => Type::Column(None, SqlType::Boolean),
+            ExpressionInner::And(_, _) => Type::Column(None, SqlType::Boolean),
             ExpressionInner::Unary(_, expression) => expression.returntype(tp),
             ExpressionInner::FunctionCall(function) => function.returntype(tp),
         }
@@ -104,13 +99,13 @@ impl Ident {
 
 impl IntoIden for Ident {
     fn into_iden(self) -> sea_query::DynIden {
-        alias(self.0)
+        str_alias(self.0)
     }
 }
 
 impl IntoIden for &Ident {
     fn into_iden(self) -> sea_query::DynIden {
-        alias(self.0.to_string())
+        str_alias(self.0.to_string())
     }
 }
 
@@ -120,52 +115,38 @@ impl Display for Ident {
     }
 }
 
-type Error = ParseError;
-
 impl ToSql for Atom {
-    fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         Ok(match self {
-            Self::Null => TypedExpression {
-                expr: SimpleExpr::Constant(Value::Json(None)),
-                ty: Type::Null,
-            },
-            Self::Bool(b) => TypedExpression {
-                ty: Type::Sql(SqlType::Boolean),
-                expr: SimpleExpr::Constant(Value::Bool(Some(*b))),
-            },
-            Self::String(s) => TypedExpression {
-                ty: Type::Sql(SqlType::String),
-                expr: SimpleExpr::Constant(Value::String(Some(Box::new(s.to_string())))),
-            },
-            Self::Bytes(b) => TypedExpression {
-                ty: Type::Sql(SqlType::Bytes),
-                expr: SimpleExpr::Constant(Value::Bytes(Some(Box::new(b.as_ref().clone())))),
-            },
-            Self::Int(i) => TypedExpression {
-                ty: Type::Sql(SqlType::Integer),
-                expr: SimpleExpr::Constant(Value::BigInt(Some(*i))),
-            },
-            Self::UInt(u) => TypedExpression {
-                ty: Type::Sql(SqlType::UInteger),
-                expr: SimpleExpr::Constant(Value::BigUnsigned(Some(*u))),
-            },
-            Self::Float(f) => TypedExpression {
-                ty: Type::Sql(SqlType::Float),
-                expr: SimpleExpr::Constant(Value::Double(Some(*f))),
-            },
-        })
+            Self::Null => SimpleExpr::Constant(Value::Json(None)),
+            Self::Bool(b) => SimpleExpr::Constant(Value::Bool(Some(*b))),
+            Self::String(s) => SimpleExpr::Constant(Value::String(Some(Box::new(s.to_string())))),
+            Self::Bytes(b) => {
+                SimpleExpr::Constant(Value::Bytes(Some(Box::new(b.as_ref().clone()))))
+            }
+            Self::Int(i) => SimpleExpr::Constant(Value::BigInt(Some(*i))),
+            Self::UInt(u) => SimpleExpr::Constant(Value::BigUnsigned(Some(*u))),
+            Self::Float(f) => SimpleExpr::Constant(Value::Double(Some(*f))),
+        }
+        .with_type(self.returntype(tp)))
     }
 
     fn returntype(&self, _tp: &Transpiler) -> Type {
-        match self {
-            Self::Null => Type::Null,
-            Self::Bool(_) => SqlType::Boolean.into(),
-            Self::String(_) => SqlType::String.into(),
-            Self::Bytes(_) => SqlType::Bytes.into(),
-            Self::Int(_) => SqlType::Integer.into(),
-            Self::UInt(_) => SqlType::UInteger.into(),
-            Self::Float(_) => SqlType::Float.into(),
-        }
+        Cell::Literal(match self {
+            Self::Null => SqlType::Null,
+            Self::Bool(_) => SqlType::Boolean,
+            // Self::String(s) => SqlType::String(sea_query::StringLen::N(s.len() as u32)),
+            Self::String(_) => SqlType::Text,
+            Self::Bytes(v) => SqlType::Binary(v.len() as u32),
+            Self::Int(_) => SqlType::BigInteger,
+            Self::UInt(_) => SqlType::BigUnsigned,
+            Self::Float(_) => SqlType::Double,
+        })
+        .into()
+    }
+
+    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+        try_iterate_fallback(self, tp, &var)
     }
 }
 
@@ -244,41 +225,6 @@ impl TryFrom<Expression> for Key {
 
 pub struct CantBeAValue;
 
-impl TryFrom<Variable> for CelValue {
-    type Error = CantBeAValue;
-
-    fn try_from(value: Variable) -> std::result::Result<Self, Self::Error> {
-        Ok(match value {
-            Variable::Object(Object { data, .. }) => Self::Map(Map {
-                map: Arc::new(
-                    data.into_iter()
-                        .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
-                        .collect::<std::result::Result<_, _>>()?,
-                ),
-            }),
-            Variable::List(expresions) => Self::List(Arc::new(
-                expresions
-                    .into_iter()
-                    .map(|v| match &*v.inner {
-                        ExpressionInner::Variable(x) => x.clone().try_into(),
-                        _ => Err(CantBeAValue),
-                    })
-                    .collect::<std::result::Result<_, _>>()?,
-            )),
-            Variable::Atom(atom) => match atom {
-                Atom::Null => Self::Null,
-                Atom::Bool(b) => Self::Bool(b),
-                Atom::String(s) => Self::String(s),
-                Atom::Bytes(items) => Self::Bytes(items),
-                Atom::Int(i) => Self::Int(i),
-                Atom::UInt(u) => Self::UInt(u),
-                Atom::Float(f) => Self::Float(f),
-            },
-            _ => return Err(CantBeAValue),
-        })
-    }
-}
-
 impl TryFrom<Expression> for CelValue {
     type Error = CantBeAValue;
 
@@ -287,199 +233,6 @@ impl TryFrom<Expression> for CelValue {
             ExpressionInner::Variable(var) => var.clone().try_into(),
             _ => Err(CantBeAValue),
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AccessChain {
-    pub(crate) head: Option<Box<Expression>>,
-    pub(crate) idents: Vec<Ident>,
-}
-
-impl ToSql for AccessChain {
-    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
-        let (head, rest) = match (&self.head, self.idents.as_slice()) {
-            (None, [schema, table, column, rest @ ..])
-                if tp.layout.column([schema, table, column]).is_some() =>
-            {
-                let (r, t) = tp.layout.column([schema, table, column]).unwrap();
-                (SimpleExpr::Column(r).with_type(t.unwrap_or_default()), rest)
-            }
-            (None, [table, column, rest @ ..]) if tp.layout.column([table, column]).is_some() => {
-                let (r, t) = tp.layout.column([table, column]).unwrap();
-                (SimpleExpr::Column(r).with_type(t.unwrap_or_default()), rest)
-            }
-            (None, [column, rest @ ..]) if tp.layout.column([column]).is_some() => {
-                let (r, t) = tp.layout.column([column]).unwrap();
-                (SimpleExpr::Column(r).with_type(t.unwrap_or_default()), rest)
-            }
-            (None, [table, rest @ ..]) if tp.layout.table_asterisk([table]).is_some() => {
-                let r = tp.layout.table_asterisk([table]).unwrap();
-                let types = tp.layout.table_columns([table]).unwrap().clone();
-                (
-                    SimpleExpr::Column(r)
-                        .with_type(Type::RecordSet(Box::new(RecordSet::with_cols(types)))),
-                    rest,
-                )
-            }
-            (None, [var, rest @ ..]) if tp.variables.contains_key(var.as_str()) => {
-                (tp.variables.get(var.as_str()).unwrap().to_sql(tp)?, rest)
-            }
-            (Some(head), rest) => (head.to_sql(tp)?, rest),
-            (None, rest) => {
-                return Err(Error::UnknownField(
-                    rest.iter()
-                        .map(|x| x.as_str().to_owned())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                    Default::default(),
-                ));
-            }
-        };
-
-        let (rest, tail) = match rest {
-            [rest @ .., tail] => (rest, Some(SimpleExpr::Constant(tail.to_sql_string()))),
-            rest => (rest, None),
-        };
-
-        Self::chain_to_json_access(
-            once(head).chain(rest.iter().map(|s| TypedExpression {
-                ty: Type::Unknown,
-                expr: SimpleExpr::Constant(s.to_sql_string()),
-            })),
-            tail,
-        )
-    }
-
-    fn to_record_set_with_alias(
-        &self,
-        tp: &Transpiler,
-        alias: sea_query::DynIden,
-    ) -> Result<SelectStatement> {
-        Ok(match (&self.head, self.idents.as_slice()) {
-            (None, [schema, table, column])
-                if tp.layout.column([schema, table, column]).is_some() =>
-            {
-                let (r, _) = tp.layout.column([schema, table, column]).unwrap();
-
-                Query::select().column(r).take()
-            }
-            (None, [table, column]) if tp.layout.column([table, column]).is_some() => {
-                let (r, _) = tp.layout.column([table, column]).unwrap();
-                Query::select().column(r).take()
-            }
-            (None, [column]) if tp.layout.column([column]).is_some() => {
-                let (r, _) = tp.layout.column([column]).unwrap();
-                Query::select().column(r).take()
-            }
-            (None, [table]) if tp.layout.table([table]).is_some() => {
-                let r = tp.layout.table([table]).unwrap();
-
-                Query::select().column(Asterisk).from(r).take()
-            }
-            (None, [var]) if tp.variables.contains_key(var.as_str()) => tp
-                .variables
-                .get(var.as_str())
-                .unwrap()
-                .to_record_set_with_alias(tp, alias)?,
-            _ => Query::select()
-                .expr_as(
-                    Func::cust("jsonb_array_elements").arg(self.to_sql(tp)?.expr),
-                    alias,
-                )
-                .take(),
-        })
-    }
-
-    fn returntype(&self, tp: &Transpiler) -> Type {
-        match (&self.head, self.idents.as_slice()) {
-            (None, [column, ..]) if tp.layout.column([column]).is_some() => {
-                tp.layout.column([column]).unwrap().1.unwrap_or_default()
-            }
-            (None, [table, ..]) if tp.layout.table_asterisk([table]).is_some() => {
-                let types = tp.layout.table_columns([table]).unwrap().clone();
-                Type::RecordSet(Box::new(RecordSet::with_cols(types)))
-            }
-            (None, [table, ..]) if tp.variables.contains_key(table.as_str()) => {
-                match tp.variables.get(table.as_str()).unwrap() {
-                    Variable::SqlSubQuery(_, hash_map) | Variable::SqlSubQueryAtom(_, hash_map) => {
-                        Type::RecordSet(Box::new(RecordSet::with_cols(hash_map.clone())))
-                    }
-                    Variable::Object(_) => JsonType::Map.into(),
-                    Variable::List(_) => JsonType::List.into(),
-                    Variable::Atom(atom) => atom.returntype(tp),
-                    Variable::SqlAny(_) => Type::Unknown,
-                }
-            }
-            _ => Type::Unknown,
-        }
-    }
-
-    fn columns(&self, tp: &Transpiler) -> HashMap<String, crate::structure::Column> {
-        match (&self.head, self.idents.as_slice()) {
-            (None, [table, ..]) if tp.layout.table_asterisk([table]).is_some() => tp
-                .layout
-                .table_columns([table])
-                .cloned()
-                .unwrap_or_default(),
-            (None, [table, ..]) if tp.variables.contains_key(table.as_str()) => {
-                tp.variables.get(table.as_str()).unwrap().columns(tp)
-            }
-            _ => Default::default(),
-        }
-    }
-}
-
-impl AccessChain {
-    const fn new(chain: Vec<Ident>) -> Self {
-        Self {
-            head: None,
-            idents: chain,
-        }
-    }
-
-    pub fn to_path(&self) -> Option<Cow<'_, str>> {
-        match (self.head.as_ref(), self.idents.as_slice()) {
-            (Some(_), _) | (_, []) => None,
-            (None, [single]) => Some(Cow::Borrowed(single.as_str())),
-            (None, more) => Some(Cow::Owned(
-                more.iter().map(Ident::as_str).collect::<Vec<_>>().join("."),
-            )),
-        }
-    }
-
-    fn chain_to_json_access(
-        chain: impl IntoIterator<Item = TypedExpression>,
-        tail: Option<SimpleExpr>,
-    ) -> Result<TypedExpression> {
-        let outer = chain
-            .into_iter()
-            .reduce(|a, b| TypedExpression {
-                ty: JsonType::Any.into(),
-                expr: a.expr.get_json_field(b.expr),
-            })
-            .ok_or(Error::Todo("tried to create empty access chain"))?;
-
-        Ok(match tail {
-            Some(tail) => TypedExpression {
-                ty: SqlType::JSON.into(),
-                expr: outer.expr.get_json_field(tail),
-            },
-            None => outer,
-        })
-    }
-
-    pub const fn as_single_ident(&self) -> Result<&Ident> {
-        match (self.head.as_ref(), self.idents.as_slice()) {
-            (None, [single]) => Ok(single),
-            _ => Err(Error::Todo("Invalid var name")),
-        }
-    }
-
-    pub fn to_table_access(&self, tp: &Transpiler) -> Result<TableRef> {
-        tp.layout
-            .table(&self.idents)
-            .ok_or(ParseError::Todo("Unknown table"))
     }
 }
 
@@ -499,14 +252,14 @@ impl ToSql for Expression {
                 let a = a.to_sql(tp)?;
                 let b = b.to_sql(tp)?;
 
-                let ty: Type = match (&a.ty, &b.ty) {
-                    (Type::Sql(SqlType::Time), _) | (_, Type::Sql(SqlType::Time)) => SqlType::Time,
-                    _ => SqlType::Number,
-                }
+                let ty: Type = Cell::Value(match (&a.ty.col_type(), &b.ty.col_type()) {
+                    (Some(SqlType::Time), _) | (_, Some(SqlType::Time)) => SqlType::Time,
+                    _ => SqlType::Integer,
+                })
                 .into();
 
-                let a = a.cast(tp, ty.clone())?.with_type(ty.clone());
-                let b = b.cast(tp, ty.clone())?.with_type(ty.clone());
+                let a = a.with_type(ty.clone());
+                let b = b.with_type(ty.clone());
 
                 let expr = {
                     SimpleExpr::Binary(
@@ -519,26 +272,24 @@ impl ToSql for Expression {
             }
 
             ExpressionInner::Relation(a, op, b) => {
-                adjust_bin_oper(tp, a, b, op)?.with_type(SqlType::Boolean)
+                adjust_bin_oper(tp, a, b, op)?.with_type(Cell::Value(SqlType::Boolean))
             }
-            ExpressionInner::Ternary(r#if, then, r#else) => TypedExpression {
-                ty: Type::Sql(SqlType::Boolean),
-                expr: SimpleExpr::Case(Box::new(
-                    CaseStatement::new()
-                        .case(r#if.to_sql(tp)?.expr, then.to_sql(tp)?.expr)
-                        .finally(r#else.to_sql(tp)?.expr),
-                )),
-            },
+            ExpressionInner::Ternary(r#if, then, r#else) => SimpleExpr::Case(Box::new(
+                CaseStatement::new()
+                    .case(r#if.to_sql(tp)?.expr, then.to_sql(tp)?.expr)
+                    .finally(r#else.to_sql(tp)?.expr),
+            ))
+            .with_type(Cell::Value(SqlType::Boolean)),
             ExpressionInner::Or(a, b) => a
                 .to_sql(tp)?
                 .expr
                 .or(b.to_sql(tp)?.expr)
-                .with_type(SqlType::Boolean),
+                .with_type(Cell::Value(SqlType::Boolean)),
             ExpressionInner::And(a, b) => a
                 .to_sql(tp)?
                 .expr
                 .and(b.to_sql(tp)?.expr)
-                .with_type(SqlType::Boolean),
+                .with_type(Cell::Value(SqlType::Boolean)),
             ExpressionInner::Unary(unary_op, expresion) => TypedExpression {
                 ty: Type::Unknown,
                 expr: match unary_op {
@@ -564,18 +315,45 @@ impl ToSql for Expression {
         })
     }
 
-    fn returntype(&self, _tp: &Transpiler) -> Type {
-        Type::Unknown
-    }
-
-    fn columns(&self, tp: &Transpiler) -> HashMap<String, crate::structure::Column> {
+    fn returntype(&self, tp: &Transpiler) -> Type {
         match &*self.inner {
-            ExpressionInner::Access(access_chain) => access_chain.columns(tp),
-            ExpressionInner::FunctionCall(function) => function.columns(tp),
-
-            _ => Default::default(),
+            ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
+            ExpressionInner::Index(expression, _) => expression
+                .returntype(tp)
+                .col_type()
+                .cloned()
+                .unwrap_or_default()
+                .into(),
+            ExpressionInner::Variable(variable) => variable.returntype(tp),
+            ExpressionInner::Arithmetic(ex, _, _) | ExpressionInner::Ternary(_, ex, _) => {
+                ex.returntype(tp)
+            }
+            ExpressionInner::Relation(_, _, _)
+            | ExpressionInner::Or(_, _)
+            | ExpressionInner::And(_, _) => Cell::Value(SqlType::Boolean).into(),
+            ExpressionInner::Unary(_, expression) => expression.returntype(tp),
+            ExpressionInner::FunctionCall(function) => function.returntype(tp),
         }
     }
+
+    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+        match &*self.inner {
+            ExpressionInner::Access(access_chain) => access_chain.try_iterate(tp, var),
+            // ExpressionInner::Index(expression, expression1) => todo!(),
+            ExpressionInner::Variable(variable) => variable.try_iterate(tp, var),
+
+            _ => try_iterate_fallback(self, tp, &var),
+        }
+    }
+
+    // fn columns(&self, tp: &Transpiler) -> HashMap<String, crate::structure::Column> {
+    //     match &*self.inner {
+    //         ExpressionInner::Access(access_chain) => access_chain.columns(tp),
+    //         ExpressionInner::FunctionCall(function) => function.columns(tp),
+
+    //         _ => Default::default(),
+    //     }
+    // }
 }
 
 fn adjust_bin_oper(
@@ -594,7 +372,7 @@ fn adjust_bin_oper(
         RelationOp::Equals => BinOper::Equal,
         RelationOp::NotEquals => BinOper::NotEqual,
         RelationOp::In => {
-            return Err(ParseError::Todo("IN operator for lists, subqueries etc"));
+            return Err(Error::Todo("IN operator for lists, subqueries etc"));
         }
     };
 
@@ -620,21 +398,35 @@ impl Expression {
     fn index(tp: &Transpiler, ex: &Self, index: &Self) -> Result<TypedExpression> {
         let TypedExpression { expr, ty } = ex.to_sql(tp)?;
 
-        Ok(match ty {
-            Type::Sql(SqlType::JSON)
-            | Type::Json(JsonType::Any | JsonType::List | JsonType::Map) => TypedExpression {
-                expr: expr.get_json_field(index.to_sql(tp)?.expr),
-                ty,
-            },
-            ty @ Type::RecordSet(_) => subquery(
-                TypedExpression { expr, ty }
-                    .to_record_set(tp)?
-                    .offset(index.as_postive_integer()?)
-                    .limit(1)
-                    .take(),
-            ),
+        // Ok(match ty {
+        //     Type::Sql(SqlType::JSON)
+        //     | Type::Json(JsonType::Any | JsonType::List | JsonType::Map) => TypedExpression {
+        //         expr: expr.get_json_field(index.to_sql(tp)?.expr),
+        //         ty,
+        //     },
+        //     ty @ Type::RecordSet(_) => subquery(
+        //         TypedExpression { expr, ty }
+        //             .to_record_set(tp)?
+        //             .offset(index.as_postive_integer()?)
+        //             .limit(1)
+        //             .take(),
+        //     ),
 
-            _ => return Err(ParseError::Todo("can't index type")),
+        //     ty => return Err(ParseError::CanNotIndexType(ty)),
+        // })
+        Ok(match ty {
+            Type::Column(_, col_type)
+            | Type::Cell(Cell::Literal(col_type) | Cell::Value(col_type))
+                if col_type.is_json() =>
+            {
+                expr.get_json_field(index.to_sql(tp)?.expr)
+                    .with_type(Cell::Value(JsonType::Any.into()))
+            }
+            Type::Row(_items) => todo!(),
+            Type::NamedRow(_items) => todo!(),
+            Type::View(_items) => todo!(),
+            Type::NamedView(_index_map) => todo!(),
+            ty => return Err(Error::CanNotIndexType(ty)),
         })
     }
 
@@ -643,13 +435,6 @@ impl Expression {
         match &*self.inner {
             ExpressionInner::Variable(var) => var.is_object(),
             _ => false,
-        }
-    }
-
-    pub(crate) fn as_postive_integer(&self) -> Result<u64> {
-        match &*self.inner {
-            ExpressionInner::Variable(variable) => variable.as_postive_integer(),
-            _ => Err(ParseError::Todo("Must be an integer")),
         }
     }
 

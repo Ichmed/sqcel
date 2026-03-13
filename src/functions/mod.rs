@@ -1,9 +1,10 @@
 pub mod cast;
 pub mod dyn_fn;
+pub mod iter;
 pub mod json;
-mod last;
 mod list_oper;
 mod map;
+pub mod or;
 pub mod reduce;
 mod slice;
 pub mod string_operations;
@@ -16,14 +17,13 @@ use crate::{
         cast::cast,
         reduce::{Reduce, Reducer},
         slice::First,
-        string_operations::{Contains, EndsWith, Matches, Size, StartsWith},
+        string_operations::{Contains, EndsWith, Matches, StartsWith},
     },
     intermediate::{Expression, ExpressionInner, Rc, ToSql},
-    transpiler::{ParseError, Result},
-    types::{JsonType, SqlType, Type, TypedExpression},
+    transpiler::{Error, Result},
+    types::SqlType,
 };
 use dyn_fn::{DynFunc, Signature};
-use last::Latest;
 use list_oper::{all, any};
 use map::Map;
 
@@ -53,41 +53,49 @@ pub fn get(
     if let ExpressionInner::Access(name) = &**name {
         let name = name
             .to_path()
-            .ok_or(ParseError::Todo("Function paths can't be empty"))?;
+            .ok_or(Error::Todo("Function paths can't be empty"))?;
         let name = name.as_ref();
 
         Ok(match (name, rec, args) {
-            ("dyn", None, [x]) => Rc::new(json::Json(x.clone())),
+            ("dyn", None, [x]) => Rc::new(json::CollectJson(x.clone())),
             ("dyn", rec, args) => {
                 Err(WrongFunctionArgs::given("dyn", rec, args).allowed(false, 1))?
             }
 
-            ("collect_object", Some(x), []) => cast(JsonType::Map.into(), x),
+            ("or", Some(rec), [alt]) => Arc::new(or::Or {
+                rec: rec.clone(),
+                alt: alt.clone(),
+            }),
+
+            ("collect_object", Some(x), []) => Arc::new(json::CollectJson(x.clone())),
             ("collect_object", rec, args) => {
                 Err(WrongFunctionArgs::given("collect_object", rec, args).allowed(false, 1))?
             }
+            ("collect_object_recursive", Some(x), []) => {
+                Arc::new(json::CollectJsonRecursive(x.clone()))
+            }
 
-            ("int", None, [x]) => cast(SqlType::Integer.into(), x),
+            ("int", None, [x]) => cast(SqlType::Integer, x),
             ("int", rec, args) => {
                 Err(WrongFunctionArgs::given("int", rec, args).allowed(false, 1))?
             }
 
-            ("string", None, [x]) => cast(SqlType::String.into(), x),
+            ("string", None, [x]) => cast(SqlType::Text, x),
             ("string", rec, args) => {
                 Err(WrongFunctionArgs::given("string", rec, args).allowed(false, 1))?
             }
 
-            ("bool", None, [x]) => cast(SqlType::Boolean.into(), x),
+            ("bool", None, [x]) => cast(SqlType::Boolean, x),
             ("bool", rec, args) => {
                 Err(WrongFunctionArgs::given("bool", rec, args).allowed(false, 1))?
             }
 
-            ("double", None, [x]) => cast(SqlType::Double.into(), x),
+            ("double", None, [x]) => cast(SqlType::Double, x),
             ("double", rec, args) => {
                 Err(WrongFunctionArgs::given("double", rec, args).allowed(false, 1))?
             }
 
-            ("time", None, [x]) => cast(Type::Sql(SqlType::Time), x),
+            ("time", None, [x]) => cast(SqlType::Time, x),
             ("time", rec, args) => {
                 Err(WrongFunctionArgs::given("time", rec, args).allowed(false, 1))?
             }
@@ -103,6 +111,8 @@ pub fn get(
 
             ("count", a, [x, b @ ..]) => r_arm!(("count", a, Some(x), b) Count),
             ("count", Some(a), []) => Reduce::new(Reducer::Count, a, None, &[])?,
+            ("size", Some(a), []) => Reduce::new(Reducer::Count, a, None, &[])?,
+            ("size", None, [a]) => Reduce::new(Reducer::Count, a, None, &[])?,
 
             ("sum", a, [x, b @ ..]) => r_arm!(("sum", a, Some(x), b) Sum),
             ("sum", Some(a), []) => Reduce::new(Reducer::Sum, a, None, &[])?,
@@ -122,8 +132,8 @@ pub fn get(
                 Err(WrongFunctionArgs::given("filter", rec, args).allowed(true, 2))?
             }
 
-            ("latest", None, [amount]) => Latest::new(Some(amount), None)?,
-            ("latest", None, [amount, pred]) => Latest::new(Some(amount), Some(pred))?,
+            // ("latest", None, [amount]) => Latest::new(Some(amount), None)?,
+            // ("latest", None, [amount, pred]) => Latest::new(Some(amount), Some(pred))?,
             ("latest", rec, args) => Err(WrongFunctionArgs::given("latest", rec, args)
                 .allowed(false, 1)
                 .allowed(false, 2))?,
@@ -153,13 +163,10 @@ pub fn get(
                 arg: pattern.clone(),
             }),
 
-            ("size", Some(rec), []) => Arc::new(Size { arg: rec.clone() }),
-            ("size", None, [rec]) => Arc::new(Size { arg: rec.clone() }),
-
             (name, rec, args) => get_dynamic_function(tp, name, rec, args)?,
         })
     } else {
-        Err(ParseError::Todo("Only idents can be function names"))
+        Err(Error::Todo("Only idents can be function names"))
     }
 }
 
@@ -182,7 +189,7 @@ fn get_dynamic_function(
                 args: args.to_vec(),
                 rt: rt.clone(),
             })
-            .ok_or(ParseError::Todo("Unknown function or arg configuration"))?,
+            .ok_or(Error::Todo("Unknown function or arg configuration"))?,
     ))
 }
 
@@ -256,10 +263,10 @@ pub fn to_select(expr: SqlExpression) -> SelectStatement {
     }
 }
 
-#[must_use]
-pub fn subquery(s: SelectStatement) -> TypedExpression {
-    TypedExpression {
-        ty: Type::RecordSet(Default::default()),
-        expr: SqlExpression::SubQuery(None, Box::new(SubQueryStatement::SelectStatement(s))),
-    }
-}
+// #[must_use]
+// pub fn subquery(s: SelectStatement) -> TypedExpression {
+//     TypedExpression {
+//         ty: Type::RecordSet(Default::default()),
+//         expr: SqlExpression::SubQuery(None, Box::new(SubQueryStatement::SelectStatement(s))),
+//     }
+// }

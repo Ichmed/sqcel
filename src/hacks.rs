@@ -13,7 +13,7 @@ pub fn get_plaintext_expression(
     let sql = Query::select().expr(tp.transpile(code)?).to_string(builder);
     let sql = sql
         .strip_prefix("SELECT ")
-        .ok_or(transpiler::ParseError::Todo(
+        .ok_or(transpiler::Error::Todo(
             "QueryBuilder did not produce a SELECT statement",
         ))?
         .to_owned();

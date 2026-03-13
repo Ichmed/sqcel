@@ -1,4 +1,4 @@
-use sea_query::{ColumnRef, Iden, Quote, SeaRc, SimpleExpr};
+use sea_query::{ColumnRef, DynIden, Iden, Quote, SimpleExpr};
 
 use crate::intermediate::Rc;
 
@@ -13,7 +13,7 @@ impl Iden for IncAlias {
 }
 
 #[derive(Clone)]
-pub struct TableAlias<const N: usize>(pub(crate) Rc<(usize, [IncAlias; N])>);
+pub struct TableAlias<const N: usize>(pub(crate) Rc<(usize, [DynIden; N])>);
 
 impl<const N: usize> Iden for TableAlias<N> {
     fn unquoted(&self, s: &mut dyn std::fmt::Write) {
@@ -54,7 +54,7 @@ impl KeyValueAlias {
     }
     #[must_use]
     pub fn key_ref(&self) -> ColumnRef {
-        ColumnRef::Column(SeaRc::new(self.0.1[0]))
+        ColumnRef::Column(self.0.1[0].clone())
     }
 
     #[must_use]
@@ -64,6 +64,39 @@ impl KeyValueAlias {
 
     #[must_use]
     pub fn value_ref(&self) -> ColumnRef {
-        ColumnRef::Column(SeaRc::new(self.0.1[1]))
+        ColumnRef::Column(self.0.1[1].clone())
+    }
+}
+
+#[derive(Clone)]
+pub struct DynTableAlias(pub(crate) Rc<(usize, Vec<DynIden>)>);
+
+impl Iden for DynTableAlias {
+    fn unquoted(&self, s: &mut dyn std::fmt::Write) {
+        write!(s, "t_{}(", self.0.0).ok();
+        if !self.0.1.is_empty() {
+            for i in 0..self.0.1.len() - 1 {
+                self.0.1[i].unquoted(s);
+                s.write_char(',').ok();
+            }
+            self.0.1[self.0.1.len() - 1].unquoted(s);
+        }
+        s.write_char(')').ok();
+    }
+
+    fn prepare(&self, s: &mut dyn std::fmt::Write, q: Quote) {
+        write!(s, "{}t_{}{}(", q.left(), self.0.0, q.right()).ok();
+        if !self.0.1.is_empty() {
+            for i in 0..self.0.1.len() - 1 {
+                write!(s, "{}", q.left()).ok();
+                self.0.1[i].unquoted(s);
+                write!(s, "{}", q.right()).ok();
+                s.write_char(',').ok();
+            }
+            write!(s, "{}", q.left()).ok();
+            self.0.1[self.0.1.len() - 1].unquoted(s);
+            write!(s, "{}", q.right()).ok();
+        }
+        s.write_char(')').ok();
     }
 }

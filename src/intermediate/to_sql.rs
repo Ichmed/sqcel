@@ -1,71 +1,60 @@
-use std::collections::HashMap;
-
-use sea_query::{
-    Asterisk, ColumnRef, DynIden, IntoIden, Query, SelectStatement, SimpleExpr, SubQueryStatement,
-    TableRef,
-};
+use sea_query::{DynIden, Query, SimpleExpr, SubQueryStatement, TableRef};
 
 use crate::{
-    Result, Transpiler,
-    structure::Column,
-    types::{RecordSet, Type, TypeConversion, TypedExpression},
+    Error, Result, Transpiler,
+    functions::iter::{IterKind, Iterable},
+    structure::{Column, Table},
+    types::{Type, TypedExpression},
 };
 
 pub trait ToSql {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression>;
 
-    fn cast(&self, tp: &Transpiler, ty: Type) -> Result<SimpleExpr> {
-        Ok(ty.try_convert(tp, self.to_sql(tp)?)?.expr)
-    }
-
-    fn assume(&self, tp: &Transpiler, ty: Type) -> Result<TypedExpression> {
-        Ok(TypedExpression {
-            expr: self.to_sql(tp)?.expr,
-            ty,
-        })
-    }
+    // fn cast(&self, tp: &Transpiler, ty: Type) -> Result<SimpleExpr> {
+    //     Ok(ty.try_convert(tp, self.to_sql(tp)?)?.expr)
+    // }
 
     fn returntype(&self, tp: &Transpiler) -> Type;
 
-    fn to_record_set(&self, tp: &Transpiler) -> Result<SelectStatement> {
-        self.to_record_set_with_alias(tp, tp.alias().into_iden())
+    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+        try_iterate_fallback(self, tp, &var)
     }
+    // fn try_iterate(&self, tp: &Transpiler, _var: DynIden) -> Result<Iterable>;
+}
 
-    fn to_record_set_with_alias(&self, tp: &Transpiler, alias: DynIden) -> Result<SelectStatement> {
-        Ok(match self.cast(tp, RecordSet::default().into())? {
-            SimpleExpr::SubQuery(_, x) => match *x {
-                SubQueryStatement::SelectStatement(select_statement) => select_statement,
-                _ => unimplemented!(
-                    "SQCEL should never generate a statement that is not a select statement"
-                ),
-            },
-            SimpleExpr::Column(x) => match x {
-                ColumnRef::Column(col) => Query::select().column(col).take(),
-                ColumnRef::TableColumn(tab, col) => Query::select().column(col).from(tab).take(),
-                ColumnRef::SchemaTableColumn(sch, tab, col) => Query::select()
-                    .column(col)
-                    .from(TableRef::SchemaTable(sch, tab))
-                    .take(),
-                ColumnRef::Asterisk => Query::select().column(Asterisk).take(),
-                ColumnRef::TableAsterisk(tab) => Query::select().column(Asterisk).from(tab).take(),
-            },
-            x => Query::select().expr_as(x, alias).take(),
-        })
-    }
+pub fn try_iterate_fallback<T: ToSql + ?Sized>(
+    me: &T,
+    tp: &Transpiler,
+    var: &DynIden,
+) -> Result<Iterable> {
+    Ok(match me.returntype(tp) {
+        Type::Column(name, ty) => Iterable {
+            expr: TableRef::SubQuery(
+                Query::select().expr(me.to_sql(tp)?.expr).take(),
+                var.clone(),
+            ),
+            kind: IterKind::Column(Column::new(name.unwrap_or_default(), ty)),
+        },
+        Type::Row(_items) => todo!(),
+        Type::NamedRow(_items) => todo!(),
+        Type::View(_items) => todo!(),
+        Type::NamedView(index_map) => match me.to_sql(tp)?.expr {
+            SimpleExpr::SubQuery(None, sub) => {
+                if let SubQueryStatement::SelectStatement(sub) = *sub {
+                    Iterable {
+                        expr: TableRef::SubQuery(sub, var.clone()),
+                        kind: IterKind::Table(Table::new(var.to_string()).columns(index_map)),
+                    }
+                } else {
+                    todo!()
+                }
+            }
+            _ => todo!(),
+        },
 
-    fn columns(&self, tp: &Transpiler) -> HashMap<String, Column> {
-        match self.returntype(tp) {
-            Type::RecordSet(r) => r.colummns.clone(),
-            _ => Default::default(),
-        }
-    }
-
-    fn has_column(&self, s: &str, tp: &Transpiler) -> bool {
-        match self.returntype(tp) {
-            Type::RecordSet(r) => r.colummns.contains_key(s),
-            _ => false,
-        }
-    }
+        // Type::Cell(cell) => cell.try_iterate(),
+        _ => return Err(Error::CanNotIterateType(me.returntype(tp))),
+    })
 }
 
 // impl ToSql for SimpleExpr {

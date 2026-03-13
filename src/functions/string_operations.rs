@@ -5,8 +5,7 @@ use crate::{
     functions::Function,
     intermediate::{Expression, ToSql},
     sql_extensions::SqlExtension,
-    transpiler::ParseError,
-    transpiler::alias,
+    transpiler::{Error, str_alias},
     types::SqlType,
 };
 
@@ -29,7 +28,7 @@ impl Function for Contains {}
 
 impl ToSql for Contains {
     fn to_sql(&self, _tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Err(ParseError::Todo(
+        Err(Error::Todo(
             "contains has no trivial implementation in SQL. Use `matches()` for now",
         ))
     }
@@ -59,7 +58,7 @@ impl Function for EndsWith {}
 
 impl ToSql for EndsWith {
     fn to_sql(&self, _tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Err(ParseError::Todo(
+        Err(Error::Todo(
             "ends_with has no trivial implementation in SQL. Use `matches()` for now",
         ))
     }
@@ -89,7 +88,7 @@ impl Function for Matches {}
 
 impl ToSql for Matches {
     fn to_sql(&self, tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Ok(Func::cust(alias("regexp_like"))
+        Ok(Func::cust(str_alias("regexp_like"))
             .arg(self.rec.to_sql(tp)?.expr)
             .arg(self.arg.to_sql(tp)?.expr)
             .with_type(SqlType::Boolean))
@@ -120,10 +119,11 @@ impl Function for StartsWith {}
 
 impl ToSql for StartsWith {
     fn to_sql(&self, tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Ok(
-            PgFunc::starts_with(self.rec.to_sql(tp)?.expr, self.arg.to_sql(tp)?.expr)
-                .with_type(SqlType::Boolean),
+        Ok(PgFunc::starts_with(
+            self.rec.to_sql(tp)?.convert(tp, &SqlType::Text)?.expr,
+            self.arg.to_sql(tp)?.expr,
         )
+        .with_type(SqlType::Boolean))
     }
 
     fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
@@ -151,12 +151,12 @@ impl Function for Size {}
 
 impl ToSql for Size {
     fn to_sql(&self, tp: &crate::Transpiler) -> crate::Result<crate::types::TypedExpression> {
-        Ok(Func::cust(alias("length"))
-            .arg(self.arg.to_sql(tp)?.expr)
-            .with_type(SqlType::UInteger))
+        Ok(Func::cust(str_alias("length"))
+            .arg(self.arg.to_sql(tp)?.convert(tp, &SqlType::Text)?.expr)
+            .with_type(SqlType::Unsigned))
     }
 
     fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
-        SqlType::UInteger.into()
+        SqlType::Unsigned.into()
     }
 }

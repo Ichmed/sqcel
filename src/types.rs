@@ -1,14 +1,21 @@
-use std::{collections::HashMap, result::Result, str::FromStr};
+use std::{collections::HashMap, num::NonZero, result::Result, str::FromStr};
 
 use sea_query::{
-    BinOper, Func, IntoColumnRef, IntoIden, Query, SimpleExpr, extension::postgres::PgBinOper,
+    BinOper, Func, IntoColumnRef, IntoIden, PostgresQueryBuilder, Query, SimpleExpr,
+    extension::postgres::PgBinOper,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::debug;
 
 use crate::{
-    Transpiler, functions::subquery, intermediate::ToSql, sql_extensions::SqlExtension,
-    structure::Column, transpiler::ParseError, transpiler::alias,
+    Transpiler,
+    functions::subquery,
+    hacks,
+    intermediate::ToSql,
+    sql_extensions::SqlExtension,
+    structure::Column,
+    transpiler::{ParseError, alias},
 };
 
 pub trait TypeConversion {
@@ -151,6 +158,53 @@ pub enum JsonType {
     Null,
 }
 
+// #[derive(Debug, PartialEq, Eq, Hash, Clone)]
+// pub enum JsonType2TheBetterOne {
+//     Any,
+//     List(Box<JsonType2TheBetterOne>),
+//     Map(JsonObject2TheBetterOne),
+//     Number,
+//     Boolean,
+//     String,
+//     Null,
+// }
+
+// #[derive(Debug, PartialEq, Eq, Hash, Clone)]
+// pub enum JsonObject2TheBetterOne {
+//     AnyContent,
+//     /// May have more fields than are known
+//     /// Some fields may have dynamically constructed
+//     /// names
+//     PartialKnownFields {
+//         /// Known fields, a `None` name indicatees that it is
+//         /// dynamically constructed
+//         fields: Vec<(Option<String>, JsonObject2TheBetterOne)>,
+//         /// Number of unknown fields.
+//         ///
+//         /// `None` indicates that the number is not known
+//         ///
+//         /// Can not be zero (that would be [Self::FullyKnownFields])
+//         unknown_fields: Option<NonZero<usize>>,
+//     },
+//     /// All fields are known but some may have dynamically
+//     /// constructed names
+//     FullyKnownFields {
+//         /// Known fields, a `None` name indicatees that it is
+//         /// dynamically constructed
+//         fields: Vec<(Option<String>, JsonObject2TheBetterOne)>,
+//     },
+//     /// All fields are known and have static names
+//     OnlyLiteralFields {
+//         /// A proto message that this object conforms to
+//         ///
+//         /// This means all required fields are present in the
+//         /// object and there are no fields in the object that
+//         /// are neither required nor optional
+//         proto_name: Option<String>,
+//         fields: Vec<(String, JsonObject2TheBetterOne)>,
+//     },
+// }
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Deserialize, Serialize, Copy)]
 pub enum SqlType {
     String,
@@ -245,15 +299,10 @@ impl TypeConversion for Type {
                 json_type.try_convert(tp, TypedExpression { expr, ty })?
             }
             (ty, Self::Sql(sql_type)) => sql_type.try_convert(tp, TypedExpression { expr, ty })?,
-            (Self::Json(JsonType::List) | Self::Sql(SqlType::JSON), Self::RecordSet(_)) => {
-                simple_func("jsonb_array_elements", expr).with_type(self.clone())
-            }
-            (Self::Json(JsonType::Map), Self::RecordSet(_)) => {
-                simple_func("jsonb_object_keys", expr).with_type(self.clone())
-            }
             (ty @ Self::Sql(SqlType::JSON), _) => {
                 JsonType::Any.try_convert(tp, TypedExpression { expr, ty })?
             }
+            (Self::Array(_), ty @ Self::RecordSet(_)) => expr.with_type(ty.clone()),
 
             (ty, _) => return Err(ConversionError::UnimplementedConvertion(ty, self.clone())),
         })
@@ -352,6 +401,9 @@ impl TypeConversion for JsonType {
             }
             .assume_is(Self::Map),
             (expr, Type::Unknown, Self::Any) => expr.cast_as("jsonb").with_type(Self::Any),
+            (expr, Type::Array(_), Self::Any | Self::List) => {
+                simple_func("to_jsonb", simple_func("array", expr)).with_type(Self::List)
+            }
             (_, Type::Null, Self::Any | Self::Null) => {
                 SimpleExpr::Constant(serde_json::Value::Null.into())
                     .cast_as("jsonb")
@@ -375,7 +427,7 @@ impl TypeConversion for SqlType {
         Ok(match (ty, self) {
             (ty, a) if Type::Sql(*a) == ty => TypedExpression { expr, ty },
             // JSON types
-            (Type::Json(_), Self::JSON) => expr.with_type(Self::JSON),
+            (ty @ Type::Json(_), Self::JSON) => expr.with_type(ty),
             (Type::Json(JsonType::Any | JsonType::Number), ty @ Self::Integer) => {
                 expr.sql_cast("int", ty)
             }
@@ -414,6 +466,10 @@ impl TypeConversion for SqlType {
                     ));
                 }
             },
+
+            (Type::RecordSet(_), Self::String) => {
+                simple_func("row_to_json", expr).sql_cast("text", Self::String)
+            }
 
             (Type::Unknown, ty @ Self::Boolean) => expr.sql_cast("bool", ty),
             (Type::Unknown, ty @ Self::Integer) => expr.sql_cast("int", ty),

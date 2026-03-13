@@ -6,23 +6,25 @@ use crate::{
         WrongFunctionArgs,
         dyn_fn::{CelFunction, DynamicFunction, Signature},
     },
+    intermediate::variables::Variable,
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
-    structure::{Column, SqlLayout, Table},
+    structure::{Column, Schema, SqlLayout, Table},
     transpiler::{
         alias::{IncAlias, KeyValueAlias, TableAlias},
         views::ViewSource,
     },
     types::{ConversionError, Type},
-    variables::Variable,
+    types2::ColumnType,
 };
 use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
 use derive_builder::Builder;
+use indexmap::IndexMap;
 use miette::{Diagnostic, LabeledSpan};
 use sea_query::{
-    Alias, Asterisk, ColumnRef, DynIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
+    Alias, Asterisk, ColumnRef, DynIden, IntoIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
 };
-use std::{collections::HashMap, iter::once, sync::RwLock};
+use std::{iter::once, sync::RwLock};
 use thiserror::Error;
 
 /// A simple example
@@ -41,15 +43,15 @@ use thiserror::Error;
 pub struct Transpiler {
     /// Identifiers included in vars will become
     /// constants during conversion (instead of bind params)
-    pub(crate) variables: HashMap<String, Variable>,
-    pub(crate) records: HashMap<String, String>,
+    pub(crate) variables: IndexMap<String, Variable>,
+    pub(crate) records: IndexMap<String, String>,
 
     pub(crate) layout: SqlLayout,
 
     /// List of known message types
-    pub(crate) types: HashMap<String, protobuf::descriptor::DescriptorProto>,
+    pub(crate) types: IndexMap<String, protobuf::descriptor::DescriptorProto>,
 
-    pub(crate) functions: HashMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
+    pub(crate) functions: IndexMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
 
     /// Whether to accept unknown types
     ///
@@ -124,19 +126,19 @@ impl Transpiler {
     }
 
     #[must_use]
-    pub fn enter_anonymous_schema(mut self, content: HashMap<String, Table>) -> Self {
+    pub fn enter_anonymous_schema(mut self, content: IndexMap<String, Table>) -> Self {
         self.layout.enter_anonymous_schema(content);
         self
     }
 
     #[must_use]
-    pub fn enter_anonymous_table(mut self, content: HashMap<String, Column>) -> Self {
+    pub fn enter_anonymous_table(mut self, content: IndexMap<String, Column>) -> Self {
         self.layout.enter_anonymous_table(content);
         self
     }
 
     #[must_use]
-    pub(crate) fn alias(&self) -> IncAlias {
+    pub fn alias(&self) -> IncAlias {
         let mut i = match self.alias_index.write() {
             Ok(guard) => guard,
             Err(error) => error.into_inner(),
@@ -146,8 +148,11 @@ impl Transpiler {
     }
 
     #[must_use]
-    pub(crate) fn alias_key_value(&self) -> KeyValueAlias {
-        TableAlias(Rc::new((self.alias().0, [self.alias(), self.alias()])))
+    pub fn alias_key_value(&self) -> KeyValueAlias {
+        TableAlias(Rc::new((
+            self.alias().0,
+            [self.alias().into_iden(), self.alias().into_iden()],
+        )))
     }
 
     #[cfg(test)]
@@ -209,14 +214,14 @@ impl TranspilerBuilder {
         self
     }
 
-    pub fn enter_anonymous_schema(&mut self, content: HashMap<String, Table>) -> &mut Self {
+    pub fn enter_anonymous_schema(&mut self, content: IndexMap<String, Table>) -> &mut Self {
         self.layout
             .get_or_insert_default()
             .enter_anonymous_schema(content);
         self
     }
 
-    pub fn enter_anonymous_table(&mut self, content: HashMap<String, Column>) -> &mut Self {
+    pub fn enter_anonymous_table(&mut self, content: IndexMap<String, Column>) -> &mut Self {
         self.layout
             .get_or_insert_default()
             .enter_anonymous_table(content);
@@ -226,7 +231,7 @@ impl TranspilerBuilder {
     pub fn column(
         &self,
         name: impl IntoIterator<Item = impl ToString>,
-    ) -> Option<(ColumnRef, Option<Type>)> {
+    ) -> Option<(ColumnRef, ColumnType)> {
         self.layout.as_ref()?.column(name)
     }
 
@@ -254,6 +259,36 @@ impl TranspilerBuilder {
         self.records
             .get_or_insert_default()
             .insert(alias.to_string(), record.to_string());
+        self
+    }
+
+    pub fn add_temp_column_to_table(&mut self, col: Column) -> &mut Self {
+        self.layout = Some(
+            self.layout
+                .take()
+                .unwrap_or_default()
+                .add_temp_column_to_table(col),
+        );
+        self
+    }
+
+    pub fn add_temp_table_to_schema(&mut self, tab: Table) -> &mut Self {
+        self.layout = Some(
+            self.layout
+                .take()
+                .unwrap_or_default()
+                .add_temp_table_to_schema(tab),
+        );
+        self
+    }
+
+    pub fn add_temp_schema_to_database(&mut self, sch: Schema) -> &mut Self {
+        self.layout = Some(
+            self.layout
+                .take()
+                .unwrap_or_default()
+                .add_temp_schema_to_database(sch),
+        );
         self
     }
 
@@ -303,7 +338,7 @@ impl TranspilerBuilder {
     ) -> Result<&mut Self> {
         let x = Query::select()
             .column(Asterisk)
-            .from(alias(from.table_name()))
+            .from(str_alias(from.table_name()))
             .and_where(selector)
             .take();
 
@@ -315,12 +350,12 @@ impl TranspilerBuilder {
 }
 
 #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
-pub fn alias(s: impl ToString) -> DynIden {
+pub fn str_alias(s: impl ToString) -> DynIden {
     SeaRc::new(Alias::new(s.to_string()))
 }
 
 #[derive(Debug, Error, Diagnostic)]
-pub enum ParseError {
+pub enum Error {
     #[error("A non ident column, field or schema name was supplied")]
     NonIdentColumnFieldSchema,
     #[error(transparent)]
@@ -348,7 +383,7 @@ pub enum ParseError {
     #[error(transparent)]
     WrongFunctionArgs(#[from] WrongFunctionArgs),
     #[error(transparent)]
-    ConversionError(#[from] ConversionError),
+    ConversionError(Box<ConversionError>),
     #[error(transparent)]
     IntConversion(#[from] std::num::TryFromIntError),
 
@@ -364,8 +399,20 @@ pub enum ParseError {
     #[error("Function {} does not accept type {:?}", .0, .1)]
     WrongFunctionArgType(String, Type),
 
+    #[error("Can not index type {:?}", .0)]
+    CanNotIndexType(Type),
+
+    #[error("Can not iterate type {:?}", .0)]
+    CanNotIterateType(Type),
+
     #[error("TODO: {}", .0)]
     Todo(&'static str),
+}
+
+impl From<ConversionError> for Error {
+    fn from(value: ConversionError) -> Self {
+        Self::ConversionError(Box::new(value))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -381,17 +428,17 @@ impl Diagnostic for CelParseError {
     }
 }
 
-impl From<cel_parser::ParseError> for ParseError {
+impl From<cel_parser::ParseError> for Error {
     fn from(value: cel_parser::ParseError) -> Self {
         Self::CelError(CelParseError(value))
     }
 }
 
-pub type Result<T> = std::result::Result<T, ParseError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use indexmap::IndexMap;
 
     use indoc::indoc;
     use sea_query::{PostgresQueryBuilder, Query};
@@ -400,7 +447,7 @@ mod test {
         intermediate::{ToIntermediate, ToSql},
         structure::{Column, Database, Schema, SqlLayout, Table},
         transpiler::Transpiler,
-        types::{JsonType, SqlType, TypeConversion},
+        types::{SqlType, json::JsonType},
     };
 
     use super::TranspilerBuilder;
@@ -414,7 +461,7 @@ mod test {
         println!("{input}\n\n{sql}");
     }
 
-    fn read_proto() -> HashMap<String, protobuf::descriptor::DescriptorProto> {
+    fn read_proto() -> IndexMap<String, protobuf::descriptor::DescriptorProto> {
         protobuf_parse::Parser::new()
             .pure()
             .include(".")
@@ -477,7 +524,7 @@ mod test {
                         Schema::new("my_sch").table(
                             Table::new("my_tab")
                                 .column(Column::new("my_col", SqlType::Boolean))
-                                .column(Column::new("my_json", SqlType::JSON))
+                                .column(Column::new("my_json", JsonType::Any))
                                 .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
                         ),
                     ),
@@ -506,7 +553,7 @@ mod test {
                         Schema::new("my_sch").table(
                             Table::new("my_tab")
                                 .column(Column::new("my_col", SqlType::Boolean))
-                                .column(Column::new("my_json", SqlType::JSON))
+                                .column(Column::new("my_json", JsonType::Any))
                                 .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
                         ),
                     ),
@@ -527,7 +574,7 @@ mod test {
         // let q = q.assume_is(JsonType::Any);
 
         let sql = Query::select()
-            .expr(JsonType::Any.try_convert(&tp, q).unwrap().expr)
+            .expr(q.cast(&tp, &JsonType::Any.into()).unwrap().expr)
             .take()
             .build(PostgresQueryBuilder)
             .0;

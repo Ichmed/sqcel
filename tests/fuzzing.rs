@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use sqcel::{
     PostgresQueryBuilder, Query, Transpiler,
     intermediate::{ToIntermediate, ToSql},
-    types::{JsonType, TypeConversion},
+    types::JsonType,
 };
 use std::env;
 use tokio_postgres::{Client, NoTls};
@@ -52,7 +52,7 @@ async fn from_pg(src: &str) -> anyhow::Result<Value> {
     let q = cel_parser::parse(src)?.to_sqcel(&tp)?.to_sql(&tp)?;
 
     let sql = Query::select()
-        .expr(JsonType::Any.try_convert(&tp, q).unwrap().expr)
+        .expr(q.reduce(&tp, &JsonType::Any.into()).unwrap().expr)
         .take()
         .to_string(PostgresQueryBuilder);
 

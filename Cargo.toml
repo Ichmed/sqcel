@@ -23,6 +23,8 @@ miette = "7.6.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
 tracing = "0.1.43"
+indexmap = "2.13.0"
+regex = "1.12.3"
 
 [features]
 default = ["serde_json", "cli", "thread-safe"]
@@ -52,3 +54,4 @@ nursery = { level = "warn", priority = -1 }
 default_trait_access = "allow"
 missing_errors_doc = "allow"
 option_if_let_else = "allow"
+cast_possible_truncation = "allow"

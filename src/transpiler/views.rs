@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use crate::{
     structure::{Column, Table},
@@ -10,7 +10,7 @@ pub trait ViewSource {
     fn columns<'a>(
         &'a self,
         tp: &'a TranspilerBuilder,
-    ) -> Result<&'a HashMap<String, Column>, TranspilerBuilderError>;
+    ) -> Result<&'a IndexMap<String, Column>, TranspilerBuilderError>;
     fn to_table(&self, tp: &TranspilerBuilder) -> Result<Table, TranspilerBuilderError> {
         Ok(Table::new(self.table_name()).columns(self.columns(tp)?.clone()))
     }
@@ -24,7 +24,7 @@ impl ViewSource for &'static str {
     fn columns<'a>(
         &'a self,
         tp: &'a TranspilerBuilder,
-    ) -> Result<&'a HashMap<String, Column>, TranspilerBuilderError> {
+    ) -> Result<&'a IndexMap<String, Column>, TranspilerBuilderError> {
         tp.layout
             .as_ref()
             .ok_or(TranspilerBuilderError::UninitializedField("layout"))?

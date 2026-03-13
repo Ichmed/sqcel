@@ -1,4 +1,4 @@
-use crate::intermediate::{AccessChain, Expression, ExpressionInner, Ident};
+use crate::intermediate::{Expression, ExpressionInner, Ident, access_chain::AccessChain};
 use std::sync::{Arc, LazyLock};
 
 macro_rules! ident {

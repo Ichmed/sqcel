@@ -3,8 +3,7 @@ use cel_parser::{Atom as CelAtom, Expression as CelExpression, Member};
 
 use crate::{
     Result, Transpiler, functions,
-    transpiler::ParseError,
-    variables::{Atom, Object, Variable},
+    intermediate::variables::{Atom, Object, Variable},
 };
 
 use super::{AccessChain, Error, Expression, ExpressionInner, Ident, ToIntermediate};
@@ -172,7 +171,7 @@ impl ToIntermediate for CelValue {
             Self::Bool(b) => Variable::Atom(Atom::Bool(*b)),
             Self::Null => Variable::Atom(Atom::Null),
             Self::Function(_, _) => {
-                return Err(ParseError::Todo("Function pointers are not supported"));
+                return Err(Error::Todo("Function pointers are not supported"));
             }
         })
         .into_anonymous())

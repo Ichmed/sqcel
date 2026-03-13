@@ -1,10 +1,11 @@
 use super::Function;
 use crate::{
     Result, Transpiler,
+    intermediate::variables::Variable,
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
-    transpiler::ParseError,
+    transpiler::Error,
     types::{SqlType, Type, TypedExpression},
-    variables::Variable,
+    types2::UnknownType,
 };
 use std::{fmt::Debug, str::FromStr};
 
@@ -77,11 +78,11 @@ impl CelFunction {
     pub fn parse(tp: &Transpiler, code: &str) -> Result<Self> {
         let (name, rest) = code
             .split_once('(')
-            .ok_or(ParseError::Todo("No arg-bracket"))?;
+            .ok_or(Error::Todo("No arg-bracket"))?;
 
         let (args, rest) = rest
             .split_once(") ->")
-            .ok_or(ParseError::Todo("No arrow"))?;
+            .ok_or(Error::Todo("No arrow"))?;
 
         let args = args.trim();
         let (method, args) = if args.is_empty() {
@@ -97,7 +98,7 @@ impl CelFunction {
             }
         };
 
-        let (ty, code) = rest.split_once(':').ok_or(ParseError::Todo("No colon"))?;
+        let (ty, code) = rest.split_once(':').ok_or(Error::Todo("No colon"))?;
 
         let ty = ty.trim();
 
@@ -108,7 +109,7 @@ impl CelFunction {
             args,
             rt: Some(
                 SqlType::from_str(ty)
-                    .map_err(|()| ParseError::Todo("Unknown type"))?
+                    .map_err(|UnknownType(_)| Error::Todo("Unknown type"))?
                     .into(),
             ),
         })
@@ -146,7 +147,7 @@ mod test {
 
     #[test]
     fn use_add() {
-        let f = CelFunction::parse(&Default::default(), "add(a, b) -> int: a + b").unwrap();
+        let f = CelFunction::parse(&Default::default(), "add(a, b) -> integer: a + b").unwrap();
         let result = crate::hacks::get_plaintext_expression(
             "add(1, 2)",
             &Transpiler::new()

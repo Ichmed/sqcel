@@ -1,21 +1,22 @@
+pub mod sql_extensions;
+pub mod structure;
+mod transpiler;
+// pub mod types;
+pub mod types2;
+pub use types2 as types;
+
+pub use sea_query::{SimpleExpr as SqlExpr, backend::*, query::Query};
+pub use transpiler::{Error, Result, Transpiler};
 pub mod functions;
 pub mod hacks;
 pub mod intermediate;
 pub mod magic;
-pub mod sql_extensions;
-pub mod structure;
-pub mod transpiler;
-pub mod types;
-pub mod variables;
 
 use clap::Parser;
+use intermediate::variables::Variable;
 use miette::IntoDiagnostic;
 use miette::miette;
-use sqcel::PostgresQueryBuilder;
 use std::{io::BufRead, path::PathBuf};
-use variables::Variable;
-
-pub use transpiler::{ParseError, Result, Transpiler};
 
 #[derive(clap::Parser)]
 struct Cli {

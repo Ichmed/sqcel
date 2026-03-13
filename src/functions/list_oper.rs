@@ -3,10 +3,10 @@ use crate::{
     intermediate::{Expression, Ident},
     sql_extensions::SqlExtension,
     structure::Column,
-    transpiler::alias,
     types::{SqlType, Type, TypedExpression},
+    types2::JsonType,
 };
-use sea_query::{Query, SimpleExpr, SubQueryOper, SubQueryStatement};
+use sea_query::{IntoIden, Query, SimpleExpr, SubQueryOper, SubQueryStatement};
 
 use crate::{
     Result,
@@ -17,7 +17,7 @@ use super::Function;
 
 #[derive(Debug)]
 pub struct ListOper {
-    source: Expression,
+    rec: Expression,
     var: Ident,
     predicate: Expression,
     oper: SubQueryOper,
@@ -27,7 +27,7 @@ pub struct ListOper {
 pub fn any(source: &Expression, var: &Expression, predicate: &Expression) -> Result<Rc<ListOper>> {
     Ok(Rc::new(ListOper {
         var: var.as_single_ident()?.clone(),
-        source: source.clone(),
+        rec: source.clone(),
         predicate: predicate.clone(),
         compare: None,
         oper: SubQueryOper::Any,
@@ -37,7 +37,7 @@ pub fn any(source: &Expression, var: &Expression, predicate: &Expression) -> Res
 pub fn all(source: &Expression, var: &Expression, predicate: &Expression) -> Result<Rc<ListOper>> {
     Ok(Rc::new(ListOper {
         var: var.as_single_ident()?.clone(),
-        source: source.clone(),
+        rec: source.clone(),
         predicate: predicate.clone(),
         compare: None,
         oper: SubQueryOper::All,
@@ -50,10 +50,14 @@ impl ToSql for ListOper {
         // value, the static value can be moved outside the subquery
 
         let varname = self.var.to_string();
-        let source = self.source.to_record_set_with_alias(tp, alias(&varname))?;
+        // let source = self
+        //     .source
+        //     .to_record_set_with_alias(tp, str_alias(&varname))?;
+        // let source = todo!();
+        let source = self.rec.try_iterate(tp, self.var.clone().into_iden())?;
         let inner_tp = tp
             .clone()
-            .enter_anonymous_table([(varname.clone(), Column::new(varname, SqlType::JSON))].into());
+            .enter_anonymous_table([(varname.clone(), Column::new(varname, JsonType::Any))].into());
 
         let compare = self
             .compare
@@ -70,10 +74,7 @@ impl ToSql for ListOper {
         let stream = SimpleExpr::SubQuery(
             Some(self.oper),
             Box::new(SubQueryStatement::SelectStatement(
-                Query::select()
-                    .expr(predicate)
-                    .from_subquery(source, self.var.clone())
-                    .take(),
+                Query::select().expr(predicate).from(source).take(),
             )),
         );
 
@@ -98,6 +99,7 @@ mod test {
         structure::*,
         transpiler::*,
         types::SqlType,
+        types2::JsonType,
     };
 
     #[test]
@@ -114,7 +116,7 @@ mod test {
                     Database::new().schema(
                         Schema::new("my_sch").table(
                             Table::new("my_tab")
-                                .column(Column::new("my_data", SqlType::JSON))
+                                .column(Column::new("my_data", JsonType::Any))
                                 .column_alias("my_alias", Column::new("hidden", SqlType::Boolean)),
                         ),
                     ),
@@ -144,7 +146,7 @@ mod test {
 
         assert_eq!(
             sql,
-            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS int) = -1) AS bool) FROM (SELECT jsonb_array_elements("my_data" -> 'list') AS "x") AS "x")"#
+            r#"SELECT * WHERE TRUE = ANY(SELECT CAST((CAST("x" AS bigint) = -1) AS bool) FROM jsonb_array_elements("my_data" -> 'list') AS "t_1"("x"))"#
         );
     }
 

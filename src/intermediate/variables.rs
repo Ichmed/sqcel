@@ -1,13 +1,19 @@
 use crate::{
     Transpiler,
-    functions::subquery,
-    intermediate::{AccessChain, Expression, ToSql},
-    structure::Column,
-    transpiler::{ParseError, Result},
-    types::{JsonType, RecordSet, Type, TypedExpression},
+    functions::iter::{IterKind, Iterable},
+    intermediate::{
+        CantBeAValue, Expression, ExpressionInner, ToSql,
+        access_chain::{AccessChain, json_to_iterable},
+    },
+    sql_extensions::{IntoSqlExpression, SqlExtension},
+    structure::{Column, Table},
+    transpiler::{Error, Result},
+    types::{JsonType, Type, TypedExpression},
+    types2::{Cell, ColumnType, JsonObject},
 };
-use sea_query::{Alias, DynIden, Func, IntoIden, Query, SelectStatement, SimpleExpr};
-use std::{collections::HashMap, sync::Arc};
+use indexmap::IndexMap;
+use sea_query::{Alias, DynIden, Func, IntoIden, Query, SelectStatement, SimpleExpr, TableRef};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum Variable {
@@ -18,9 +24,9 @@ pub enum Variable {
     /// A String, int, float, etc.
     Atom(Atom),
     /// An SQL query that will evaluate to a list
-    SqlSubQuery(Box<SelectStatement>, HashMap<String, Column>),
+    SqlSubQuery(Box<SelectStatement>, IndexMap<String, Column>),
     /// An SQL query that will evaluate to a single record
-    SqlSubQueryAtom(Box<SelectStatement>, HashMap<String, Column>),
+    SqlSubQueryAtom(Box<SelectStatement>, IndexMap<String, Column>),
     /// An SQL expression that will evaluate to anything
     SqlAny(Box<SimpleExpr>),
 }
@@ -45,13 +51,13 @@ impl Object {
             match tp.types.get(schema.as_ref()) {
                 Some(ty) => (schema, ty),
                 None if tp.accept_unknown_types => return Ok(()),
-                None => return Err(ParseError::UnknownType(schema.into_owned())),
+                None => return Err(Error::UnknownType(schema.into_owned())),
             }
         } else {
-            return Err(ParseError::Todo("Invalid type"));
+            return Err(Error::Todo("Invalid type"));
         };
 
-        let mut fields: HashMap<String, bool> = type_info
+        let mut fields: IndexMap<String, bool> = type_info
             .field
             .iter()
             .filter_map(|f| {
@@ -67,9 +73,9 @@ impl Object {
             .map(|(name, _)| name.as_str())
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .find(|name| fields.remove(*name).is_none())
+            .find(|name| fields.swap_remove(*name).is_none())
             .map_or(Ok(()), |f| {
-                Err(ParseError::UnknownField(
+                Err(Error::UnknownField(
                     type_name.clone().into_owned(),
                     f.to_owned(),
                 ))
@@ -82,10 +88,7 @@ impl Object {
             .collect();
 
         if !missing_fields.is_empty() {
-            return Err(ParseError::MissingFields(
-                type_name.into_owned(),
-                missing_fields,
-            ));
+            return Err(Error::MissingFields(type_name.into_owned(), missing_fields));
         }
 
         Ok(())
@@ -96,7 +99,7 @@ impl ToSql for Object {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         self.verify(tp)?;
         Ok(TypedExpression {
-            ty: JsonType::Map.into(),
+            ty: Cell::Value(JsonObject::AnyContent.into()).into(),
             expr: SimpleExpr::FunctionCall(
                 Func::cust(Alias::new("jsonb_build_object")).args(
                     self.data
@@ -111,7 +114,7 @@ impl ToSql for Object {
     }
 
     fn returntype(&self, _tp: &Transpiler) -> Type {
-        Type::Json(JsonType::Map)
+        Cell::Literal(JsonObject::AnyContent.into()).into()
     }
 }
 
@@ -120,7 +123,7 @@ impl ToSql for Variable {
         Ok(match self {
             Self::Object(o) => o.to_sql(tp)?,
             Self::List(variables) => TypedExpression {
-                ty: JsonType::List.into(),
+                ty: Cell::Value(JsonType::List(Box::new(JsonType::Any)).into()).into(),
                 expr: SimpleExpr::FunctionCall(
                     Func::cust(Alias::new("jsonb_build_array")).args(
                         variables
@@ -132,10 +135,13 @@ impl ToSql for Variable {
             },
             Self::Atom(atom) => atom.to_sql(tp)?,
 
-            Self::SqlSubQuery(select_statement, types)
-            | Self::SqlSubQueryAtom(select_statement, types) => {
-                subquery(*select_statement.clone()).assume_is(RecordSet::with_cols(types.clone()))
-            }
+            Self::SqlSubQuery(select_statement, cols)
+            | Self::SqlSubQueryAtom(select_statement, cols) => (**select_statement)
+                .clone()
+                .into_expr()
+                .with_type(Type::NamedView(
+                    cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect(),
+                )),
             Self::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),
@@ -145,14 +151,43 @@ impl ToSql for Variable {
 
     fn returntype(&self, tp: &Transpiler) -> Type {
         match self {
-            Self::Object(_) => JsonType::Map.into(),
-            Self::List(_) => JsonType::List.into(),
+            Self::Object(_) => Cell::Value(JsonObject::AnyContent.into()).into(),
+            Self::List(l) => {
+                if let Some(Some(Type::Cell(c))) = l
+                    .iter()
+                    .map(|x| x.returntype(tp))
+                    .map(Some)
+                    .reduce(|a, b| if a == b { a } else { None })
+                    && let Cell::Literal(ColumnType::Json(j, _)) = c
+                {
+                    Cell::Value(JsonType::List(Box::new(j)).into()).into()
+                } else {
+                    Cell::Value(JsonType::List(Box::new(JsonType::Any)).into()).into()
+                }
+            }
             Self::Atom(atom) => atom.returntype(tp),
             Self::SqlSubQuery(_, cols) | Self::SqlSubQueryAtom(_, cols) => {
-                Type::RecordSet(Box::new(RecordSet::with_cols(cols.clone())))
+                Type::NamedView(cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect())
             }
             Self::SqlAny(_) => Type::Unknown,
         }
+    }
+
+    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+        Ok(match self {
+            Self::Object(object) => Self::List(object.data.iter().map(|x| x.0.clone()).collect())
+                .try_iterate(tp, var)?,
+            Self::List(_) => {
+                json_to_iterable(tp, var, self.to_sql(tp)?, None, JsonType::Any.into())?
+            }
+            Self::Atom(atom) => atom.try_iterate(tp, var)?,
+            Self::SqlSubQuery(select_statement, index_map)
+            | Self::SqlSubQueryAtom(select_statement, index_map) => Iterable {
+                expr: TableRef::SubQuery((**select_statement).clone(), var.clone()),
+                kind: IterKind::Table(Table::new(var.to_string()).columns(index_map.clone())),
+            },
+            Self::SqlAny(_simple_expr) => todo!(),
+        })
     }
 }
 
@@ -165,7 +200,7 @@ impl Variable {
     pub fn as_postive_integer(&self) -> Result<u64> {
         match self {
             Self::Atom(atom) => atom.as_positive_integer(),
-            _ => Err(ParseError::Todo("Must be an integer")),
+            _ => Err(Error::Todo("Must be an integer")),
         }
     }
 
@@ -220,11 +255,9 @@ pub enum Atom {
 impl Atom {
     fn as_positive_integer(&self) -> Result<u64> {
         match self {
-            Self::Int(i) => (*i)
-                .try_into()
-                .map_err(|_| ParseError::Todo("Must be positive")),
+            Self::Int(i) => (*i).try_into().map_err(|_| Error::Todo("Must be positive")),
             Self::UInt(u) => Ok(*u),
-            _ => Err(ParseError::Todo("Must be an integer")),
+            _ => Err(Error::Todo("Must be an integer")),
         }
     }
 }
@@ -232,5 +265,40 @@ impl Atom {
 impl From<i64> for Atom {
     fn from(value: i64) -> Self {
         Self::Int(value)
+    }
+}
+
+impl TryFrom<Variable> for cel_interpreter::Value {
+    type Error = CantBeAValue;
+
+    fn try_from(value: Variable) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            Variable::Object(Object { data, .. }) => Self::Map(cel_interpreter::objects::Map {
+                map: Arc::new(
+                    data.into_iter()
+                        .map(|(k, v)| Ok((k.try_into()?, v.try_into()?)))
+                        .collect::<std::result::Result<_, _>>()?,
+                ),
+            }),
+            Variable::List(expresions) => Self::List(Arc::new(
+                expresions
+                    .into_iter()
+                    .map(|v| match &*v.inner {
+                        ExpressionInner::Variable(x) => x.clone().try_into(),
+                        _ => Err(CantBeAValue),
+                    })
+                    .collect::<std::result::Result<_, _>>()?,
+            )),
+            Variable::Atom(atom) => match atom {
+                Atom::Null => Self::Null,
+                Atom::Bool(b) => Self::Bool(b),
+                Atom::String(s) => Self::String(s),
+                Atom::Bytes(items) => Self::Bytes(items),
+                Atom::Int(i) => Self::Int(i),
+                Atom::UInt(u) => Self::UInt(u),
+                Atom::Float(f) => Self::Float(f),
+            },
+            _ => return Err(CantBeAValue),
+        })
     }
 }

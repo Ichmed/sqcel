@@ -6,7 +6,7 @@ use sea_query::{
 use crate::{
     Transpiler,
     sql_extensions::SqlExtension,
-    types2::{Cell, ColumnType, ConversionError, JsonObject, JsonType, Type, subquery_as},
+    types::{Cell, ColumnType, ConversionError, JsonObject, JsonType, Type, subquery_as},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,9 +48,9 @@ impl TypedExpression {
         #[allow(clippy::match_same_arms)]
         Ok(match (self.ty.clone(), other) {
             (me, other) if me == *other => self,
-            (Type::Column(_, _), Type::Column(None, other)) => self.cast(tp, other)?,
+            (Type::Column(_, _), Type::Column(None, other)) => self.convert(tp, other)?,
             (Type::Column(_, _), Type::Column(Some(name), other)) => self
-                .cast(tp, other)?
+                .convert(tp, other)?
                 .map_expr(|expr| subquery_as(expr, Alias::new(name))),
             (Type::Column(_, _), Type::View(None)) => self,
             (
@@ -58,7 +58,7 @@ impl TypedExpression {
                 other @ (Type::Row(Some(items)) | Type::View(Some(items))),
             ) => {
                 if let Some((name, ty)) = items.first() {
-                    let x = self.cast(tp, ty)?;
+                    let x = self.convert(tp, ty)?;
                     if let Some(name) = name {
                         x.map_expr(|expr| subquery_as(expr, Alias::new(name)))
                     } else {
@@ -79,47 +79,18 @@ impl TypedExpression {
                 ));
             }
 
-            // (MetaType::Row(items), MetaType::Column(col_type)) => todo!(),
-            // (MetaType::Row(items), MetaType::NamedColumn(_, col_type)) => todo!(),
-            // (MetaType::Row(items), MetaType::Row(items)) => todo!(),
-            // (MetaType::Row(items), MetaType::NamedRow(items)) => todo!(),
-            // (MetaType::Row(items), MetaType::Table(items)) => todo!(),
-            // (MetaType::Row(items), MetaType::NamedTable(items)) => todo!(),
-            // (MetaType::Row(items), MetaType::Cell(cell)) => todo!(),
-
-            // (MetaType::NamedRow(items), MetaType::Column(col_type)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::NamedColumn(_, col_type)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::Row(items)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::NamedRow(items)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::Table(items)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::NamedTable(items)) => todo!(),
-            // (MetaType::NamedRow(items), MetaType::Cell(cell)) => todo!(),
-
-            // (MetaType::Table(items), MetaType::Column(col_type)) => todo!(),
-            // (MetaType::Table(items), MetaType::NamedColumn(_, col_type)) => todo!(),
-            // (MetaType::Table(items), MetaType::Row(items)) => todo!(),
-            // (MetaType::Table(items), MetaType::NamedRow(items)) => todo!(),
-            // (MetaType::Table(items), MetaType::Table(items)) => todo!(),
-            // (MetaType::Table(items), MetaType::NamedTable(items)) => todo!(),
-            // (MetaType::Table(items), MetaType::Cell(cell)) => todo!(),
-
-            // (MetaType::NamedTable(items), MetaType::Column(col_type)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::NamedColumn(_, col_type)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::Row(items)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::NamedRow(items)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::Table(items)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::NamedTable(items)) => todo!(),
-            // (MetaType::NamedTable(items), MetaType::Cell(cell)) => todo!(),
-            (Type::Cell(_), Type::Cell(Cell::Value(b) | Cell::Literal(b))) => self.cast(tp, b)?,
+            (Type::Cell(_), Type::Cell(Cell::Value(b) | Cell::Literal(b))) => {
+                self.convert(tp, b)?
+            }
             (a, b @ Type::Cell(Cell::Literal(_))) => {
                 return Err(ConversionError::CantConvert(
                     Box::new(a),
                     Box::new(b.clone()),
                 ));
             }
-            (Type::Cell(_), Type::Column(None, b)) => self.cast(tp, b)?,
+            (Type::Cell(_), Type::Column(None, b)) => self.convert(tp, b)?,
             (Type::Cell(_), Type::Column(Some(name), b)) => self
-                .cast(tp, b)?
+                .convert(tp, b)?
                 .map_expr(|expr| subquery_as(expr, Alias::new(name))),
             (Type::Cell(cell), Type::Row(None)) => {
                 self.with_type(Type::View(Some(vec![(None, cell.col_type().clone())])))
@@ -129,7 +100,7 @@ impl TypedExpression {
             }
             (_me @ Type::Cell(_), other @ (Type::Row(Some(items)) | Type::View(Some(items)))) => {
                 if let Some((name, ty)) = items.first() {
-                    let x = self.cast(tp, ty)?;
+                    let x = self.convert(tp, ty)?;
                     if let Some(name) = name {
                         x.map_expr(|expr| subquery_as(expr, Alias::new(name)))
                     } else {
@@ -140,8 +111,6 @@ impl TypedExpression {
                     self
                 }
             }
-            (Type::Cell(_cell), Type::NamedRow(_items)) => todo!(),
-            (Type::Cell(_cell), Type::NamedView(_items)) => todo!(),
             (a, b) => {
                 return Err(ConversionError::UnimplementedConvertion(
                     Box::new(a),
@@ -186,7 +155,6 @@ impl TypedExpression {
                                 Box::new(SimpleExpr::Constant("{}".into())),
                             ),
                         }
-                        .cast_as(ColumnType::Text)
                         .with_type(ColumnType::Text)
                     }
                     (_, other @ ColumnType::Json(JsonType::Any, _)) => Func::cust("to_jsonb")
@@ -214,14 +182,13 @@ impl TypedExpression {
             .ty
             .col_type()
             .ok_or_else(|| ConversionError::CantReduce(Box::new(self.ty.clone()), other.clone()))?;
-        if mt == other {
+        if mt == other || (mt.is_json() && other.is_json()) {
             return Ok(self);
         }
         if mt.can_cast_to(other) {
             Ok(Self {
-                expr: self.expr.into_json_cast().cast_as(other.clone()),
-                ty: match self.ty {
-                    Type::Column(name, _) => Type::Column(name, other.clone()),
+                ty: match &self.ty {
+                    Type::Column(name, _) => Type::Column(name.clone(), other.clone()),
                     Type::Cell(_) => Type::Cell(Cell::Value(other.clone())),
                     _ => {
                         return Err(ConversionError::CantReduce(
@@ -230,6 +197,7 @@ impl TypedExpression {
                         ));
                     }
                 },
+                expr: self.into_json_cast().expr.cast_as(other.clone()),
             })
         } else {
             Err(ConversionError::CantCast(mt.clone(), other.clone()))
@@ -268,16 +236,7 @@ impl TypedExpression {
                                         Func::cust("to_jsonb")
                                             .arg(ColumnRef::Column(a.into_iden())),
                                     )
-                                    .from_subquery(
-                                        match self.expr {
-                                            SimpleExpr::SubQuery(None, x) => match *x {
-                                                SubQueryStatement::SelectStatement(x) => x,
-                                                _ => todo!(),
-                                            },
-                                            _ => todo!(),
-                                        },
-                                        a,
-                                    )
+                                    .from_subquery(self.as_select()?.clone(), a)
                                     .take()
                                     .into(),
                             )),

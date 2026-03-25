@@ -1,9 +1,7 @@
 pub mod sql_extensions;
 pub mod structure;
 mod transpiler;
-// pub mod types;
-pub mod types2;
-pub use types2 as types;
+pub mod types;
 
 pub use sea_query::{SimpleExpr as SqlExpr, backend::*, query::Query};
 pub use transpiler::{Error, Result, Transpiler};

@@ -8,33 +8,8 @@ use crate::{
     intermediate::{Expression, Rc, ToSql},
     sql_extensions::{IntoSqlExpression, SqlExtension},
     transpiler::alias::DynTableAlias,
-    types2::{Cell, JsonObject, JsonType, Type, TypedExpression},
+    types::{Cell, JsonObject, Type, TypedExpression},
 };
-
-pub struct CollectJson(pub Expression);
-
-impl Function for CollectJson {}
-
-impl ToSql for CollectJson {
-    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
-        let var = tp.alias_key_value();
-        Ok(collect_simple_object(var.key_ref(), var.value_ref())?
-            .from(self.0.clone().try_iterate(tp, var.clone().into_iden())?)
-            .take()
-            .into_expr()
-            .with_type(self.returntype(tp)))
-    }
-
-    fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
-        Type::Column(None, JsonType::Any.into())
-    }
-}
-
-fn collect_simple_object(key: ColumnRef, value: ColumnRef) -> Result<SelectStatement> {
-    Ok(Query::select()
-        .expr(Func::cust("jsonb_object_agg").arg(key).arg(value))
-        .take())
-}
 
 pub struct CollectJsonRecursive(pub Expression);
 
@@ -105,7 +80,7 @@ mod test {
     use crate::{
         Result, Transpiler,
         hacks::get_plaintext_expression,
-        types2::{ColumnType, JsonType},
+        types::{ColumnType, JsonType},
     };
 
     fn compile(s: &str) -> Result<String> {
@@ -143,22 +118,9 @@ mod test {
     }
 
     #[test]
-    fn simple() {
-        assert_sql!(
-            "foo.count(x, x.number).collect_object()",
-            r#"
-                SELECT jsonb_object_agg("c_2", "c_3")
-                FROM
-                    (SELECT "x"."number" AS "c_0", COUNT("x") FROM "foo" AS "x" GROUP BY "x"."number")
-                AS "t_1"("c_2","c_3")
-            "#
-        );
-    }
-
-    #[test]
     fn simple_recursive() {
         assert_sql!(
-            "foo.count(x, x.number).collect_object_recursive()",
+            "foo.count(x, x.number).collect_object()",
             r#"
                 SELECT jsonb_object_agg("c_0", "count")
                 FROM
@@ -172,7 +134,7 @@ mod test {
     #[test]
     fn double_recursive() {
         assert_sql!(
-            "foo.count(x, x.number, x.liste).collect_object_recursive()",
+            "foo.count(x, x.number, x.liste).collect_object()",
             r#"
                 SELECT jsonb_object_agg("c_0", "c_1")
                 FROM (

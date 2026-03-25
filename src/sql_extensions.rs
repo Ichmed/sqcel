@@ -6,9 +6,9 @@ use sea_query::{
 };
 
 use crate::{
-    Transpiler,
+    Error, Transpiler,
     transpiler::{alias::TableAlias, str_alias},
-    types::{Type, TypedExpression},
+    types::{ColumnType, Type, TypedExpression},
 };
 pub trait SqlExtension: Sized {
     fn with_type(self, ty: impl Into<Type>) -> TypedExpression;
@@ -22,6 +22,30 @@ pub trait SqlExtension: Sized {
     }
     #[must_use]
     fn sql_cast(self, type_name: &str, ty: impl Into<Type>) -> TypedExpression;
+
+    fn as_select(&self) -> Result<&SelectStatement, Error> {
+        Err(Error::NotASelectStatement)
+    }
+}
+
+impl SqlExtension for TypedExpression {
+    fn with_type(self, ty: impl Into<Type>) -> TypedExpression {
+        TypedExpression {
+            ty: ty.into(),
+            ..self
+        }
+    }
+
+    fn sql_cast(self, type_name: &str, ty: impl Into<Type>) -> TypedExpression {
+        TypedExpression {
+            ty: ty.into(),
+            expr: self.expr.cast_as(str_alias(type_name)),
+        }
+    }
+
+    fn into_json_cast(self) -> Self {
+        self.expr.into_json_cast().with_type(ColumnType::Text)
+    }
 }
 
 impl SqlExtension for SimpleExpr {
@@ -59,6 +83,16 @@ impl SqlExtension for SimpleExpr {
         TypedExpression {
             expr: self,
             ty: ty.into(),
+        }
+    }
+
+    fn as_select(&self) -> Result<&SelectStatement, Error> {
+        match self {
+            SimpleExpr::SubQuery(None, x) => match &**x {
+                SubQueryStatement::SelectStatement(x) => Ok(&x),
+                _ => Err(Error::NotASelectStatement),
+            },
+            _ => Err(Error::NotASelectStatement),
         }
     }
 }

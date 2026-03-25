@@ -6,7 +6,6 @@ mod list_oper;
 mod map;
 pub mod or;
 pub mod reduce;
-mod slice;
 pub mod string_operations;
 
 use std::{any::Any, fmt::Display, sync::Arc};
@@ -16,7 +15,6 @@ use crate::{
     functions::{
         cast::cast,
         reduce::{Reduce, Reducer},
-        slice::First,
         string_operations::{Contains, EndsWith, Matches, StartsWith},
     },
     intermediate::{Expression, ExpressionInner, Rc, ToSql},
@@ -57,22 +55,14 @@ pub fn get(
         let name = name.as_ref();
 
         Ok(match (name, rec, args) {
-            ("dyn", None, [x]) => Rc::new(json::CollectJson(x.clone())),
-            ("dyn", rec, args) => {
-                Err(WrongFunctionArgs::given("dyn", rec, args).allowed(false, 1))?
-            }
-
             ("or", Some(rec), [alt]) => Arc::new(or::Or {
                 rec: rec.clone(),
                 alt: alt.clone(),
             }),
 
-            ("collect_object", Some(x), []) => Arc::new(json::CollectJson(x.clone())),
+            ("collect_object", Some(x), []) => Arc::new(json::CollectJsonRecursive(x.clone())),
             ("collect_object", rec, args) => {
                 Err(WrongFunctionArgs::given("collect_object", rec, args).allowed(false, 1))?
-            }
-            ("collect_object_recursive", Some(x), []) => {
-                Arc::new(json::CollectJsonRecursive(x.clone()))
             }
 
             ("int", None, [x]) => cast(SqlType::Integer, x),
@@ -99,9 +89,6 @@ pub fn get(
             ("time", rec, args) => {
                 Err(WrongFunctionArgs::given("time", rec, args).allowed(false, 1))?
             }
-
-            ("first", Some(list), []) => First::new(list),
-            ("first", None, [list]) => First::new(list),
 
             ("min", a, [x, b @ ..]) => r_arm!(("min", a, Some(x), b) Min),
             ("min", Some(a), []) => Reduce::new(Reducer::Min, a, None, &[])?,

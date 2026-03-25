@@ -1,10 +1,11 @@
-use cel_parser::ParseError;
 use indexmap::IndexMap;
 use sea_query::{IntoIden, Query, SelectExpr, SimpleExpr, SubQueryStatement, Value};
 use thiserror::Error;
 
+use crate::Error;
 use crate::structure::Column;
 
+pub mod agree;
 mod column_types;
 pub mod json;
 mod typed_expression;
@@ -30,7 +31,13 @@ pub enum ConversionError {
     #[error("Unimplemented reduction from {:?} to {:?}", .0, .1)]
     UnimplementedCast(ColumnType, ColumnType),
     #[error(transparent)]
-    ParseError(Box<ParseError>),
+    ParseError(Box<Error>),
+}
+
+impl From<Error> for ConversionError {
+    fn from(value: Error) -> Self {
+        Self::ParseError(Box::new(value))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -177,7 +184,7 @@ pub fn subquery_as(expr: SimpleExpr, name: impl IntoIden) -> SimpleExpr {
 
 #[cfg(test)]
 mod test {
-    use crate::types2::{Cell, ColumnType, Type, TypedExpression};
+    use crate::types::{Cell, ColumnType, Type, TypedExpression};
 
     #[test]
     fn num_to_num() {

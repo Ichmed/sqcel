@@ -10,7 +10,7 @@ use crate::{
     intermediate::{Expression, Ident, ToSql},
     sql_extensions::{AliasWarpping, SqlExtension},
     structure::{Column, Table},
-    types2::{Cell, ColumnType, JsonType, Type, TypedExpression},
+    types::{Cell, ColumnType, JsonType, Type, TypedExpression},
 };
 
 #[derive(Clone, Debug)]
@@ -174,7 +174,7 @@ impl ToSql for AccessChain {
                     TableRef::SchemaTable(s, t) | TableRef::SchemaTableAlias(s, t, _) => {
                         TableRef::SchemaTableAlias(s, t, var.clone())
                     }
-                    _ => todo!(),
+                    _ => return Err(Error::CanNotIterateType(self.returntype(tp))),
                 },
                 kind: IterKind::Table(
                     Table::new(var.to_string()).columns(
@@ -195,10 +195,7 @@ impl ToSql for AccessChain {
                 .get(variable.as_str())
                 .unwrap()
                 .try_iterate(tp, var)?,
-            x => {
-                dbg!(x);
-                todo!()
-            }
+            _ => return Err(Error::CanNotIterateType(self.returntype(tp))),
         })
     }
 }

@@ -86,7 +86,7 @@ mod test {
     use crate::{
         Result, Transpiler,
         hacks::get_plaintext_expression,
-        types2::{ColumnType, JsonType},
+        types::{ColumnType, JsonType},
     };
 
     fn compile(s: &str) -> Result<String> {

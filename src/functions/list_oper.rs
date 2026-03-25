@@ -4,7 +4,7 @@ use crate::{
     sql_extensions::SqlExtension,
     structure::Column,
     types::{SqlType, Type, TypedExpression},
-    types2::JsonType,
+    types::JsonType,
 };
 use sea_query::{IntoIden, Query, SimpleExpr, SubQueryOper, SubQueryStatement};
 
@@ -50,10 +50,6 @@ impl ToSql for ListOper {
         // value, the static value can be moved outside the subquery
 
         let varname = self.var.to_string();
-        // let source = self
-        //     .source
-        //     .to_record_set_with_alias(tp, str_alias(&varname))?;
-        // let source = todo!();
         let source = self.rec.try_iterate(tp, self.var.clone().into_iden())?;
         let inner_tp = tp
             .clone()
@@ -99,7 +95,7 @@ mod test {
         structure::*,
         transpiler::*,
         types::SqlType,
-        types2::JsonType,
+        types::JsonType,
     };
 
     #[test]

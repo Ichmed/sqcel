@@ -13,8 +13,8 @@ use crate::{
     },
     sql_extensions::SqlExtension,
     transpiler::str_alias,
+    types::Cell,
     types::{SqlType, Type, TypedExpression, json::JsonType},
-    types2::Cell,
 };
 use cel_interpreter::{Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
@@ -60,25 +60,6 @@ impl ExpressionInner {
     pub fn into_anonymous(self) -> Expression {
         Expression {
             inner: Rc::new(self),
-        }
-    }
-}
-
-impl Expression {
-    #[must_use]
-    #[allow(clippy::match_same_arms, reason = "Nicer formatting")]
-    pub fn returntype(&self, tp: &Transpiler) -> Type {
-        match &*self.inner {
-            ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
-            ExpressionInner::Index(expression, _) => expression.returntype(tp),
-            ExpressionInner::Variable(variable) => variable.returntype(tp),
-            ExpressionInner::Arithmetic(a, _, _) => a.returntype(tp),
-            ExpressionInner::Relation(_, _, _) => Type::Column(None, SqlType::Boolean),
-            ExpressionInner::Ternary(_, expression1, _) => expression1.returntype(tp),
-            ExpressionInner::Or(_, _) => Type::Column(None, SqlType::Boolean),
-            ExpressionInner::And(_, _) => Type::Column(None, SqlType::Boolean),
-            ExpressionInner::Unary(_, expression) => expression.returntype(tp),
-            ExpressionInner::FunctionCall(function) => function.returntype(tp),
         }
     }
 }
@@ -263,9 +244,9 @@ impl ToSql for Expression {
 
                 let expr = {
                     SimpleExpr::Binary(
-                        Box::new(a.expr.into_json_cast()),
+                        Box::new(a.into_json_cast().expr),
                         bin_oper,
-                        Box::new(b.expr.into_json_cast()),
+                        Box::new(b.into_json_cast().expr),
                     )
                 };
                 TypedExpression { expr, ty }
@@ -318,12 +299,12 @@ impl ToSql for Expression {
     fn returntype(&self, tp: &Transpiler) -> Type {
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.returntype(tp),
-            ExpressionInner::Index(expression, _) => expression
-                .returntype(tp)
-                .col_type()
-                .cloned()
-                .unwrap_or_default()
-                .into(),
+            ExpressionInner::Index(expression, _) => match expression.returntype(tp).col_type() {
+                Some(SqlType::Json(_, kind)) => Some(SqlType::Json(JsonType::Any, *kind)),
+                x => x.cloned(),
+            }
+            .unwrap_or_default()
+            .into(),
             ExpressionInner::Variable(variable) => variable.returntype(tp),
             ExpressionInner::Arithmetic(ex, _, _) | ExpressionInner::Ternary(_, ex, _) => {
                 ex.returntype(tp)
@@ -339,21 +320,11 @@ impl ToSql for Expression {
     fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.try_iterate(tp, var),
-            // ExpressionInner::Index(expression, expression1) => todo!(),
             ExpressionInner::Variable(variable) => variable.try_iterate(tp, var),
 
             _ => try_iterate_fallback(self, tp, &var),
         }
     }
-
-    // fn columns(&self, tp: &Transpiler) -> HashMap<String, crate::structure::Column> {
-    //     match &*self.inner {
-    //         ExpressionInner::Access(access_chain) => access_chain.columns(tp),
-    //         ExpressionInner::FunctionCall(function) => function.columns(tp),
-
-    //         _ => Default::default(),
-    //     }
-    // }
 }
 
 fn adjust_bin_oper(
@@ -379,7 +350,7 @@ fn adjust_bin_oper(
     let (a, b) = if a.ty.is_json() || b.ty.is_json() {
         (a.expr.into_json_get(), b.expr.into_json_get())
     } else {
-        (a.expr.into_json_cast(), b.expr.into_json_cast())
+        (a.into_json_cast().expr, b.into_json_cast().expr)
     };
 
     Ok(match (a, op, b) {
@@ -422,10 +393,6 @@ impl Expression {
                 expr.get_json_field(index.to_sql(tp)?.expr)
                     .with_type(Cell::Value(JsonType::Any.into()))
             }
-            Type::Row(_items) => todo!(),
-            Type::NamedRow(_items) => todo!(),
-            Type::View(_items) => todo!(),
-            Type::NamedView(_index_map) => todo!(),
             ty => return Err(Error::CanNotIndexType(ty)),
         })
     }

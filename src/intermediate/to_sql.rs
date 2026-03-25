@@ -35,9 +35,6 @@ pub fn try_iterate_fallback<T: ToSql + ?Sized>(
             ),
             kind: IterKind::Column(Column::new(name.unwrap_or_default(), ty)),
         },
-        Type::Row(_items) => todo!(),
-        Type::NamedRow(_items) => todo!(),
-        Type::View(_items) => todo!(),
         Type::NamedView(index_map) => match me.to_sql(tp)?.expr {
             SimpleExpr::SubQuery(None, sub) => {
                 if let SubQueryStatement::SelectStatement(sub) = *sub {
@@ -46,10 +43,10 @@ pub fn try_iterate_fallback<T: ToSql + ?Sized>(
                         kind: IterKind::Table(Table::new(var.to_string()).columns(index_map)),
                     }
                 } else {
-                    todo!()
+                    return Err(Error::CanNotIterateType(me.returntype(tp)));
                 }
             }
-            _ => todo!(),
+            _ => return Err(Error::CanNotIterateType(me.returntype(tp))),
         },
 
         // Type::Cell(cell) => cell.try_iterate(),

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use sea_query::{Alias, DynIden, IntoIden, PgInterval, SeaRc, StringLen};
 
-use crate::{intermediate::Rc, types2::json::JsonType};
+use crate::{intermediate::Rc, types::json::JsonType};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ColumnType {
@@ -80,6 +80,7 @@ impl ColumnType {
             (a, b) if a == b => true,
             (Self::Array(me), Self::Array(other)) => me.can_cast_to(other),
             (_, Self::Array(_)) => false,
+            (Self::Json(_, _), Self::Json(JsonType::Any, _)) => true,
             (Self::Json(json_type, _), other) => json_type.can_cast_to(other),
             (a, b) => Self::can_cast_inner(a, b),
         }
@@ -262,7 +263,7 @@ impl From<sea_query::ColumnType> for ColumnType {
             sea_query::ColumnType::Inet => Self::Inet,
             sea_query::ColumnType::MacAddr => Self::MacAddr,
             sea_query::ColumnType::LTree => Self::LTree,
-            _ => todo!(),
+            _ => unimplemented!("Columntype is non-exhaustive"),
         }
     }
 }

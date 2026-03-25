@@ -64,7 +64,13 @@ impl ToSql for Reduce {
                         .enumerate()
                         .map(|(i, x)| {
                             let name = format!("c_{i}");
-                            (name, x.returntype(&tp_inner).col_type().unwrap().clone())
+                            (
+                                name,
+                                x.returntype(&tp_inner)
+                                    .col_type()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            )
                         })
                         .chain([("count".to_owned(), SqlType::Integer)])
                         .collect(),

@@ -5,7 +5,7 @@ use crate::{
     functions::Function,
     intermediate::{Expression, ToSql},
     sql_extensions::SqlExtension,
-    types2::{Type, TypedExpression},
+    types::{Type, TypedExpression, agree::unify},
 };
 
 pub struct Or {
@@ -17,14 +17,17 @@ impl Function for Or {}
 
 impl ToSql for Or {
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
-        let base = self.rec.to_sql(tp)?.reshape(tp, &self.returntype(tp))?.expr;
-        // let base = self.rec.to_sql(tp)?.expr;
-        let alt = self.alt.to_sql(tp)?.expr;
-
-        Ok(Func::coalesce([base, alt]).with_type(self.returntype(tp)))
+        let rt = self.returntype(tp);
+        Ok(Func::coalesce([
+            self.rec.to_sql(tp)?.reshape(tp, &rt)?.expr,
+            self.alt.to_sql(tp)?.reshape(tp, &rt)?.expr,
+        ])
+        .with_type(rt))
     }
 
     fn returntype(&self, tp: &crate::Transpiler) -> Type {
-        self.alt.returntype(tp)
+        let a = self.rec.returntype(tp);
+        let b = self.alt.returntype(tp);
+        unify(a.clone(), b).unwrap_or(a)
     }
 }

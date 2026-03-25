@@ -5,7 +5,7 @@ use crate::{
     intermediate::{Expression, Rc, ToIntermediate, ToSql},
     transpiler::Error,
     types::{SqlType, Type, TypedExpression},
-    types2::UnknownType,
+    types::UnknownType,
 };
 use std::{fmt::Debug, str::FromStr};
 

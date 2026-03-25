@@ -9,10 +9,10 @@ use crate::{
     structure::{Column, Table},
     transpiler::{Error, Result},
     types::{JsonType, Type, TypedExpression},
-    types2::{Cell, ColumnType, JsonObject},
+    types::{Cell, ColumnType, JsonObject},
 };
 use indexmap::IndexMap;
-use sea_query::{Alias, DynIden, Func, IntoIden, Query, SelectStatement, SimpleExpr, TableRef};
+use sea_query::{Alias, DynIden, Func, Query, SelectStatement, SimpleExpr, TableRef};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -186,7 +186,9 @@ impl ToSql for Variable {
                 expr: TableRef::SubQuery((**select_statement).clone(), var.clone()),
                 kind: IterKind::Table(Table::new(var.to_string()).columns(index_map.clone())),
             },
-            Self::SqlAny(_simple_expr) => todo!(),
+            Self::SqlAny(_simple_expr) => {
+                return Err(Error::CanNotIterateType(self.returntype(tp)));
+            }
         })
     }
 }
@@ -202,28 +204,6 @@ impl Variable {
             Self::Atom(atom) => atom.as_positive_integer(),
             _ => Err(Error::Todo("Must be an integer")),
         }
-    }
-
-    /// Turn this into a recordset
-    pub fn to_record_set(&self, tp: &Transpiler) -> Result<SelectStatement> {
-        self.to_record_set_with_alias(tp, tp.alias().into_iden())
-    }
-
-    pub fn to_record_set_with_alias(&self, tp: &Transpiler, a: DynIden) -> Result<SelectStatement> {
-        Ok(match self {
-            Self::SqlSubQuery(select_statement, _) => *select_statement.clone(),
-            Self::List(content) if content.iter().all(Expression::is_object) => {
-                todo!("populate_record_set")
-            }
-
-            Self::List(_) => Query::select()
-                .expr_as(
-                    Func::cust("jsonb_array_elements").arg(self.to_sql(tp)?.expr),
-                    a,
-                )
-                .take(),
-            _ => todo!("Missing into record set"),
-        })
     }
 
     /// Turn this into a select query

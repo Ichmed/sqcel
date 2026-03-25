@@ -14,7 +14,7 @@ use crate::{
         views::ViewSource,
     },
     types::{ConversionError, Type},
-    types2::ColumnType,
+    types::ColumnType,
 };
 use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
@@ -404,6 +404,9 @@ pub enum Error {
 
     #[error("Can not iterate type {:?}", .0)]
     CanNotIterateType(Type),
+
+    #[error("Not a SELECT statement")]
+    NotASelectStatement,
 
     #[error("TODO: {}", .0)]
     Todo(&'static str),

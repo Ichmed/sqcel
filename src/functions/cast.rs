@@ -3,7 +3,7 @@ use crate::{
     functions::Function,
     intermediate::{Expression, Rc, ToSql},
     types::{Type, TypedExpression},
-    types2::ColumnType,
+    types::ColumnType,
 };
 
 struct Cast(Expression, ColumnType);

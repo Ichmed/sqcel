@@ -157,6 +157,14 @@ impl TypedExpression {
                         }
                         .with_type(ColumnType::Text)
                     }
+                    (
+                        ColumnType::Time
+                        | ColumnType::Timestamp
+                        | ColumnType::TimestampWithTimeZone
+                        | ColumnType::DateTime,
+                        a,
+                    ) if a.is_integer() => self.expr.extract("epoch"),
+
                     (_, other @ ColumnType::Json(JsonType::Any, _)) => Func::cust("to_jsonb")
                         .arg(self.expr)
                         .with_type(other.clone()),

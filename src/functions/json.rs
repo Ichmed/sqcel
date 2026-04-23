@@ -8,8 +8,33 @@ use crate::{
     intermediate::{Expression, Rc, ToSql},
     sql_extensions::{IntoSqlExpression, SqlExtension},
     transpiler::alias::DynTableAlias,
-    types::{Cell, JsonObject, Type, TypedExpression},
+    types::{Cell, JsonObject, JsonType, Type, TypedExpression},
 };
+
+pub struct CollectJson(pub Expression);
+
+impl Function for CollectJson {}
+
+impl ToSql for CollectJson {
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
+        let var = tp.alias_key_value();
+        Ok(collect_simple_object(var.key_ref(), var.value_ref())
+            .from(self.0.clone().try_iterate(tp, var.into_iden())?)
+            .take()
+            .into_expr()
+            .with_type(self.returntype(tp)))
+    }
+
+    fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
+        Type::Column(None, JsonType::Any.into())
+    }
+}
+
+fn collect_simple_object(key: ColumnRef, value: ColumnRef) -> SelectStatement {
+    Query::select()
+        .expr(Func::cust("jsonb_object_agg").arg(key).arg(value))
+        .take()
+}
 
 pub struct CollectJsonRecursive(pub Expression);
 
@@ -20,11 +45,10 @@ impl ToSql for CollectJsonRecursive {
         let var = tp.alias();
         Ok(match self.0.returntype(tp) {
             Type::NamedView(index_map) => collect_object_recursive(
-                tp,
-                index_map
+                &index_map
                     .keys()
                     .map(|x| Alias::new(x).into_iden())
-                    .collect(),
+                    .collect::<Vec<_>>(),
                 0,
                 self.0.try_iterate(tp, var.into_iden())?.into_table_ref(),
             )?,
@@ -40,32 +64,23 @@ impl ToSql for CollectJsonRecursive {
 }
 
 fn collect_object_recursive(
-    tp: &Transpiler,
-    cols: Vec<DynIden>,
+    cols: &[DynIden],
     offset: usize,
     source: TableRef,
 ) -> Result<SelectStatement> {
     Ok(Query::select()
-        .exprs(
-            cols[..offset]
-                .into_iter()
-                .map(|x| ColumnRef::Column(x.clone())),
-        )
+        .exprs(cols[..offset].iter().map(|x| ColumnRef::Column(x.clone())))
         .expr(
             Func::cust("jsonb_object_agg")
                 .arg(ColumnRef::Column(cols[offset].clone()))
                 .arg(ColumnRef::Column(cols[offset + 1].clone())),
         )
-        .group_by_columns(
-            cols[..offset]
-                .into_iter()
-                .map(|x| ColumnRef::Column(x.clone())),
-        )
+        .group_by_columns(cols[..offset].iter().map(|x| ColumnRef::Column(x.clone())))
         .from(if offset == cols.len() - 2 {
             source.alias(DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden())
         } else {
             TableRef::SubQuery(
-                collect_object_recursive(tp, cols.clone(), offset + 1, source)?,
+                collect_object_recursive(cols, offset + 1, source)?,
                 DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden(),
             )
         })

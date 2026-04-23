@@ -113,7 +113,7 @@ impl Type {
 
 impl From<SqlType> for Type {
     fn from(value: SqlType) -> Self {
-        Type::Column(None, value)
+        Self::Column(None, value)
     }
 }
 

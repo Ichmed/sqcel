@@ -1,10 +1,10 @@
 use sea_query::{
-    Alias, BinOper, ColumnRef, Func, IntoIden, Query, SimpleExpr, SubQueryStatement,
-    extension::postgres::PgBinOper,
+    Alias, BinOper, ColumnRef, Func, IntoIden, Query, SelectStatement, SimpleExpr,
+    SubQueryStatement, extension::postgres::PgBinOper,
 };
 
 use crate::{
-    Transpiler,
+    Error, Transpiler,
     sql_extensions::SqlExtension,
     types::{Cell, ColumnType, ConversionError, JsonObject, JsonType, Type, subquery_as},
 };
@@ -244,9 +244,8 @@ impl TypedExpression {
                                         Func::cust("to_jsonb")
                                             .arg(ColumnRef::Column(a.into_iden())),
                                     )
-                                    .from_subquery(self.as_select()?.clone(), a)
-                                    .take()
-                                    .into(),
+                                    .from_subquery(self.as_select_statement()?.clone(), a)
+                                    .take(),
                             )),
                         )),
                     )
@@ -259,5 +258,16 @@ impl TypedExpression {
                 ));
             }
         })
+    }
+
+    fn as_select_statement(&self) -> Result<&SelectStatement, Error> {
+        match self.expr {
+            SimpleExpr::SubQuery(None, ref x) => match **x {
+                SubQueryStatement::SelectStatement(ref x) => Some(x),
+                _ => None,
+            },
+            _ => None,
+        }
+        .ok_or_else(|| Error::Todo("Not a Select Statement"))
     }
 }

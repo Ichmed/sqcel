@@ -23,21 +23,19 @@ impl ToSql for AccessChain {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         let (head, rest) = match (&self.head, self.idents.as_slice()) {
             (None, [schema, table, column, rest @ ..])
-                if tp.layout.column([schema, table, column]).is_some() =>
+                if let Some((r, t)) = tp.layout.column([schema, table, column]) =>
             {
-                let (r, t) = tp.layout.column([schema, table, column]).unwrap();
                 (SimpleExpr::Column(r).with_type(t), rest)
             }
-            (None, [table, column, rest @ ..]) if tp.layout.column([table, column]).is_some() => {
-                let (r, t) = tp.layout.column([table, column]).unwrap();
+            (None, [table, column, rest @ ..])
+                if let Some((r, t)) = tp.layout.column([table, column]) =>
+            {
                 (SimpleExpr::Column(r).with_type(t), rest)
             }
-            (None, [column, rest @ ..]) if tp.layout.column([column]).is_some() => {
-                let (r, t) = tp.layout.column([column]).unwrap();
+            (None, [column, rest @ ..]) if let Some((r, t)) = tp.layout.column([column]) => {
                 (SimpleExpr::Column(r).with_type(t), rest)
             }
-            (None, [table, rest @ ..]) if tp.layout.table_asterisk([table]).is_some() => {
-                let r = tp.layout.table_asterisk([table]).unwrap();
+            (None, [table, rest @ ..]) if let Some(r) = tp.layout.table_asterisk([table]) => {
                 let types = tp.layout.table_columns([table]).unwrap().clone();
                 (
                     SimpleExpr::Column(r).with_type(Type::NamedView(
@@ -46,8 +44,8 @@ impl ToSql for AccessChain {
                     rest,
                 )
             }
-            (None, [var, rest @ ..]) if tp.variables.contains_key(var.as_str()) => {
-                (tp.variables.get(var.as_str()).unwrap().to_sql(tp)?, rest)
+            (None, [var, rest @ ..]) if let Some(v) = tp.variables.get(var.as_str()) => {
+                (v.to_sql(tp)?, rest)
             }
             (Some(head), rest) => (head.to_sql(tp)?, rest),
             (None, rest) => {
@@ -77,34 +75,22 @@ impl ToSql for AccessChain {
 
     fn returntype(&self, tp: &Transpiler) -> Type {
         match (&self.head, self.idents.as_slice()) {
-            (None, [column, ..]) if tp.layout.column([column]).is_some() => Type::Column(
-                Some(column.as_str().to_owned()),
-                tp.layout.column([column]).unwrap().1,
-            ),
-            (None, [table, col, ..])
-                if tp
+            (None, [column, ..]) if let Some((_, ty)) = tp.layout.column([column]) => {
+                Type::Column(Some(column.as_str().to_owned()), ty)
+            }
+            (None, [table, column, ..])
+                if let Some(col) = tp
                     .layout
                     .table_columns([table])
-                    .and_then(|t| t.get(col.as_str()))
-                    .is_some() =>
+                    .and_then(|t| t.get(column.as_str())) =>
             {
-                let ty = tp
-                    .layout
-                    .table_columns([table])
-                    .unwrap()
-                    .clone()
-                    .get(col.as_str())
-                    .unwrap()
-                    .ty
-                    .clone();
-                Type::Column(Some(col.as_str().to_owned()), ty)
+                Type::Column(Some(column.as_str().to_owned()), col.ty.clone())
             }
-            (None, [table, ..]) if tp.layout.table_asterisk([table]).is_some() => {
-                let types = tp.layout.table_columns([table]).unwrap().clone();
-                types.into()
+            (None, [table, ..]) if let Some(tab) = tp.layout.table_columns([table]) => {
+                tab.clone().into()
             }
-            (None, [table, ..]) if tp.variables.contains_key(table.as_str()) => {
-                tp.variables.get(table.as_str()).unwrap().returntype(tp)
+            (None, [table, ..]) if let Some(var) = tp.variables.get(table.as_str()) => {
+                var.returntype(tp)
             }
             _ => Type::Unknown,
         }
@@ -112,9 +98,7 @@ impl ToSql for AccessChain {
 
     fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
         Ok(match (&self.head, self.idents.as_slice()) {
-            (None, [schema, table, column])
-                if tp.layout.column([schema, table, column]).is_some() =>
-            {
+            (None, p @ [schema, table, column]) if let Some((_, ty)) = tp.layout.column(p) => {
                 json_to_iterable(
                     tp,
                     var,
@@ -124,31 +108,30 @@ impl ToSql for AccessChain {
                         column.into_iden(),
                     ),
                     Some(column.to_string()),
-                    tp.layout.column([schema, table, column]).unwrap().1,
+                    ty,
                 )?
             }
-            (None, [table, column]) if tp.layout.column([table, column]).is_some() => {
+            (None, p @ [table, column]) if let Some((_, ty)) = tp.layout.column(p) => {
                 json_to_iterable(
                     tp,
                     var,
                     ColumnRef::TableColumn(table.into_iden(), column.into_iden()),
                     Some(column.to_string()),
-                    tp.layout.column([table, column]).unwrap().1,
+                    ty,
                 )?
             }
-            (None, [column]) if tp.layout.column([column]).is_some() => json_to_iterable(
+            (None, p @ [column]) if let Some((_, ty)) = tp.layout.column(p) => json_to_iterable(
                 tp,
                 var,
                 ColumnRef::Column(column.into_iden()),
                 Some(column.to_string()),
-                tp.layout.column([column]).unwrap().1,
+                ty,
             )?,
-            (None, [column, rest @ ..]) if tp.layout.column([column]).is_some() => {
+            (None, [column, rest @ ..]) if let Some((r, t)) = tp.layout.column([column]) => {
                 let (rest, tail) = match rest {
                     [rest @ .., tail] => (rest, Some(SimpleExpr::Constant(tail.to_sql_string()))),
                     rest => (rest, None),
                 };
-                let (r, t) = tp.layout.column([column]).unwrap();
                 json_to_iterable(
                     tp,
                     var,
@@ -166,8 +149,8 @@ impl ToSql for AccessChain {
                     t,
                 )?
             }
-            (None, [table]) if tp.layout.table([table]).is_some() => Iterable {
-                expr: match tp.layout.table([table]).unwrap() {
+            (None, p @ [table]) if let Some(tab) = tp.layout.table(p) => Iterable {
+                expr: match tab {
                     TableRef::Table(t) | TableRef::TableAlias(t, _) => {
                         TableRef::TableAlias(t, var.clone())
                     }
@@ -190,12 +173,19 @@ impl ToSql for AccessChain {
                     ),
                 ),
             },
-            (None, [variable]) if tp.variables.contains_key(variable.as_str()) => tp
-                .variables
-                .get(variable.as_str())
-                .unwrap()
-                .try_iterate(tp, var)?,
-            _ => return Err(Error::CanNotIterateType(self.returntype(tp))),
+            // (None, [variable]) if tp.variables.contains_key(variable.as_str()) => tp
+            //     .variables
+            //     .get(variable.as_str())
+            //     .unwrap()
+            //     .try_iterate(tp, var)?,
+            (None, [variable]) if let Some(v) = tp.variables.get(variable.as_str()) => {
+                v.try_iterate(tp, var)?
+            }
+            x => {
+                return Err(Error::CanNotIterateType(
+                    x.0.as_ref().map(|x| x.returntype(tp)).unwrap_or_default(),
+                ));
+            }
         })
     }
 }

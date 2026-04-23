@@ -10,16 +10,11 @@ use crate::{
 pub trait ToSql {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression>;
 
-    // fn cast(&self, tp: &Transpiler, ty: Type) -> Result<SimpleExpr> {
-    //     Ok(ty.try_convert(tp, self.to_sql(tp)?)?.expr)
-    // }
-
     fn returntype(&self, tp: &Transpiler) -> Type;
 
     fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
         try_iterate_fallback(self, tp, &var)
     }
-    // fn try_iterate(&self, tp: &Transpiler, _var: DynIden) -> Result<Iterable>;
 }
 
 pub fn try_iterate_fallback<T: ToSql + ?Sized>(
@@ -34,6 +29,29 @@ pub fn try_iterate_fallback<T: ToSql + ?Sized>(
                 var.clone(),
             ),
             kind: IterKind::Column(Column::new(name.unwrap_or_default(), ty)),
+        },
+        // Type::Row(_items) => todo!(),
+        // Type::NamedRow(_items) => todo!(),
+        Type::View(items) => match me.to_sql(tp)?.expr {
+            SimpleExpr::SubQuery(None, sub) => {
+                if let SubQueryStatement::SelectStatement(sub) = *sub {
+                    Iterable {
+                        expr: TableRef::SubQuery(sub, var.clone()),
+                        kind: IterKind::Table(
+                            items
+                                .map(|items| {
+                                    Table::new(var.to_string()).columns(
+                                        items.into_iter().filter_map(|(k, v)| k.map(|k| (k, v))),
+                                    )
+                                })
+                                .unwrap_or_default(),
+                        ),
+                    }
+                } else {
+                    return Err(Error::CanNotIterateType(me.returntype(tp)));
+                }
+            }
+            _ => return Err(Error::CanNotIterateType(me.returntype(tp))),
         },
         Type::NamedView(index_map) => match me.to_sql(tp)?.expr {
             SimpleExpr::SubQuery(None, sub) => {
@@ -53,19 +71,6 @@ pub fn try_iterate_fallback<T: ToSql + ?Sized>(
         _ => return Err(Error::CanNotIterateType(me.returntype(tp))),
     })
 }
-
-// impl ToSql for SimpleExpr {
-//     fn to_sql(&self, _: &Transpiler) -> Result<TypedExpression> {
-//         Ok(TypedExpression {
-//             expr: self.clone(),
-//             ty: Type::Unknown,
-//         })
-//     }
-
-//     fn returntype(&self, _tp: &Transpiler) -> Type {
-//         Type::Unknown
-//     }
-// }
 
 macro_rules! wrappers {
     ($($(#[$attr:meta])* $name:ident),* $(,)?) => {$(

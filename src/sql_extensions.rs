@@ -32,14 +32,14 @@ pub trait SqlExtension: Sized {
 
 impl SqlExtension for TypedExpression {
     fn with_type(self, ty: impl Into<Type>) -> TypedExpression {
-        TypedExpression {
+        Self {
             ty: ty.into(),
             ..self
         }
     }
 
     fn sql_cast(self, type_name: &str, ty: impl Into<Type>) -> TypedExpression {
-        TypedExpression {
+        Self {
             ty: ty.into(),
             expr: self.expr.cast_as(str_alias(type_name)),
         }
@@ -70,7 +70,7 @@ impl SqlExtension for SimpleExpr {
                 Self::Binary(a, BinOper::PgOperator(PgBinOper::GetJsonField), b)
             }
             Self::Binary(x, BinOper::Custom("#>>"), extr)
-                if *extr == SimpleExpr::Constant("{}".into()) =>
+                if *extr == Self::Constant("{}".into()) =>
             {
                 *x
             }
@@ -94,8 +94,8 @@ impl SqlExtension for SimpleExpr {
 
     fn as_select(&self) -> Result<&SelectStatement, Error> {
         match self {
-            SimpleExpr::SubQuery(None, x) => match &**x {
-                SubQueryStatement::SelectStatement(x) => Ok(&x),
+            Self::SubQuery(None, x) => match &**x {
+                SubQueryStatement::SelectStatement(x) => Ok(x),
                 _ => Err(Error::NotASelectStatement),
             },
             _ => Err(Error::NotASelectStatement),
@@ -104,8 +104,8 @@ impl SqlExtension for SimpleExpr {
 
     fn extract(self, what: impl ToString) -> TypedExpression {
         Func::cust("EXTRACT")
-            .arg(SimpleExpr::Binary(
-                Box::new(SimpleExpr::Keyword(Keyword::Custom(str_alias(what)))),
+            .arg(Self::Binary(
+                Box::new(Self::Keyword(Keyword::Custom(str_alias(what)))),
                 BinOper::Custom("from"),
                 Box::new(self),
             ))

@@ -38,7 +38,9 @@ ident!(
     /// which should be set by the outside context
     /// such that it evaluates to a SELECT query that
     /// returns a `RecordSet` that is a reasonable sub set
-    /// of `here`. As such `we` should fall back to `here`
+    /// of `here`.
+    ///
+    /// As such `we` should fall back to `here`
     /// if not explicitly set.
     ///
     /// Example: `{here} WHERE "customer" = {customer}`

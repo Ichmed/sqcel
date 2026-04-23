@@ -23,6 +23,7 @@ macro_rules! either_way {
     };
 }
 
+#[must_use]
 pub fn unify(a: Type, b: Type) -> Option<Type> {
     match (a, b) {
         (a, b) if a == b => Some(a),

@@ -86,15 +86,18 @@ impl ColumnType {
         }
     }
 
-    pub fn is_number(&self) -> bool {
+    #[must_use]
+    pub const fn is_number(&self) -> bool {
         self.is_float() || self.is_integer()
     }
 
-    pub fn is_float(&self) -> bool {
+    #[must_use]
+    pub const fn is_float(&self) -> bool {
         matches!(self, Self::Double | Self::Float)
     }
 
-    pub fn is_integer(&self) -> bool {
+    #[must_use]
+    pub const fn is_integer(&self) -> bool {
         matches!(
             self,
             Self::TinyUnsigned

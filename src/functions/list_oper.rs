@@ -2,9 +2,7 @@ use crate::{
     Transpiler,
     intermediate::{Expression, Ident},
     sql_extensions::SqlExtension,
-    structure::Column,
     types::{SqlType, Type, TypedExpression},
-    types::JsonType,
 };
 use sea_query::{IntoIden, Query, SimpleExpr, SubQueryOper, SubQueryStatement};
 
@@ -48,12 +46,11 @@ impl ToSql for ListOper {
     fn to_sql(&self, tp: &crate::Transpiler) -> Result<TypedExpression> {
         // TODO: If the predicate is a single comparisson with a static
         // value, the static value can be moved outside the subquery
+        // e.g. `<static> = ANY (<subquery>)`
+        // e.g. `<static> = ALL (<subquery>)`
 
-        let varname = self.var.to_string();
         let source = self.rec.try_iterate(tp, self.var.clone().into_iden())?;
-        let inner_tp = tp
-            .clone()
-            .enter_anonymous_table([(varname.clone(), Column::new(varname, JsonType::Any))].into());
+        let inner_tp = tp.iterate(&source);
 
         let compare = self
             .compare
@@ -94,8 +91,8 @@ mod test {
         intermediate::{ToIntermediate, ToSql},
         structure::*,
         transpiler::*,
-        types::SqlType,
         types::JsonType,
+        types::SqlType,
     };
 
     #[test]

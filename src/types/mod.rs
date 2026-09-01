@@ -2,8 +2,8 @@ use indexmap::IndexMap;
 use sea_query::{IntoIden, Query, SelectExpr, SimpleExpr, SubQueryStatement, Value};
 use thiserror::Error;
 
-use crate::Error;
 use crate::structure::Column;
+use crate::{Error, Result};
 
 pub mod agree;
 mod column_types;
@@ -92,6 +92,21 @@ impl Type {
         })
     }
 
+    /// the type of elements in this array or column
+    ///
+    /// only returns a value for `Cell`, `Column` and `NamedColumn`
+    #[must_use]
+    pub fn array_type(&self) -> Option<&ColumnType> {
+        Some(match self {
+            Self::Cell(cell) => match cell.col_type() {
+                ColumnType::Array(x) => x,
+                _ => return None,
+            },
+            Self::Column(_, ty) => ty,
+            _ => return None,
+        })
+    }
+
     /// the single type of this structure
     ///
     /// only returns a value for `Cell`, `Column` and `NamedColumn`
@@ -108,6 +123,14 @@ impl Type {
     pub fn is_json(&self) -> bool {
         self.col_type()
             .is_some_and(column_types::ColumnType::is_json)
+    }
+
+    pub fn into_column(self) -> Result<Self> {
+        match self {
+            Self::Column(_, _) | Self::Unknown => Ok(self),
+            Self::Cell(Cell::Literal(t) | Cell::Value(t)) => Ok(Self::Column(None, t)),
+            _ => Err(Error::Todo("More than one Column")),
+        }
     }
 }
 

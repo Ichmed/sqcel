@@ -1,4 +1,4 @@
-use sea_query::{DynIden, Query, SimpleExpr, SubQueryStatement, TableRef};
+use sea_query::{DynIden, IntoIden, Query, SimpleExpr, SubQueryStatement, TableRef};
 
 use crate::{
     Error, Result, Transpiler,
@@ -12,8 +12,8 @@ pub trait ToSql {
 
     fn returntype(&self, tp: &Transpiler) -> Type;
 
-    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
-        try_iterate_fallback(self, tp, &var)
+    fn try_iterate(&self, tp: &Transpiler, var: impl IntoIden) -> Result<Iterable> {
+        try_iterate_fallback(self, tp, &var.into_iden())
     }
 }
 

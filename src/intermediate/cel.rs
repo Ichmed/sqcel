@@ -2,7 +2,8 @@ use cel_interpreter::{ExecutionError, Value as CelValue, objects::Key};
 use cel_parser::{Atom as CelAtom, Expression as CelExpression, Member};
 
 use crate::{
-    Result, Transpiler, functions,
+    Result, Transpiler,
+    functions::{self, FunctionBundle},
     intermediate::variables::{Atom, Object, Variable},
 };
 
@@ -59,18 +60,24 @@ impl ToIntermediate for CelExpression {
             Self::And(a, b) => ExpressionInner::And(box_ex!(tp, a), box_ex!(tp, b)),
             Self::Unary(unary_op, e) => ExpressionInner::Unary(unary_op.clone(), box_ex!(tp, e)),
             Self::Member(expression, member) => resolve_member(tp, expression, member)?,
-            Self::FunctionCall(name, rec, args) => ExpressionInner::FunctionCall(functions::get(
-                tp,
-                &name.to_sqcel(tp)?,
-                rec.as_ref()
-                    .map(|rec| rec.to_sqcel(tp))
-                    .transpose()?
-                    .as_ref(),
-                &args
+            Self::FunctionCall(name, rec, args) => {
+                let rec1 = rec.as_ref().map(|rec| rec.to_sqcel(tp)).transpose()?;
+                let args1 = &args
                     .iter()
                     .map(|arg| arg.to_sqcel(tp))
-                    .collect::<Result<Vec<_>>>()?,
-            )?),
+                    .collect::<Result<Vec<_>>>()?;
+                ExpressionInner::FunctionCall(FunctionBundle {
+                    function: tp.functions.get(
+                        name.to_sqcel(tp)?.as_single_ident()?.as_str(),
+                        rec1.as_ref(),
+                        args1,
+                    )?,
+                    args: functions::FunctionArgs {
+                        receiver: rec1,
+                        args: args1.clone(),
+                    },
+                })
+            }
             Self::List(expressions) => ExpressionInner::Variable(Variable::List(
                 expressions
                     .iter()

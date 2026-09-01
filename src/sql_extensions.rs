@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use sea_query::{
-    BinOper, ExprTrait, Func, FunctionCall, IntoIden, Keyword, SelectStatement, SimpleExpr,
-    SubQueryStatement, extension::postgres::PgBinOper,
+    BinOper, Func, FunctionCall, IntoIden, Keyword, SelectStatement, SimpleExpr, SubQueryStatement,
+    extension::postgres::PgBinOper,
 };
 
 use crate::{
@@ -27,7 +27,7 @@ pub trait SqlExtension: Sized {
         Err(Error::NotASelectStatement)
     }
 
-    fn extract(self, what: impl ToString) -> TypedExpression;
+    fn extract(self, what: impl ToString) -> SimpleExpr;
 }
 
 impl SqlExtension for TypedExpression {
@@ -49,8 +49,8 @@ impl SqlExtension for TypedExpression {
         self.expr.into_json_cast().with_type(ColumnType::Text)
     }
 
-    fn extract(self, what: impl ToString) -> Self {
-        self.expr.extract(what).with_type(ColumnType::BigInteger)
+    fn extract(self, what: impl ToString) -> SimpleExpr {
+        self.expr.extract(what)
     }
 }
 
@@ -102,15 +102,14 @@ impl SqlExtension for SimpleExpr {
         }
     }
 
-    fn extract(self, what: impl ToString) -> TypedExpression {
+    fn extract(self, what: impl ToString) -> SimpleExpr {
         Func::cust("EXTRACT")
             .arg(Self::Binary(
                 Box::new(Self::Keyword(Keyword::Custom(str_alias(what)))),
                 BinOper::Custom("from"),
                 Box::new(self),
             ))
-            .cast_as("int")
-            .with_type(ColumnType::BigInteger)
+            .into()
     }
 }
 
@@ -123,7 +122,7 @@ impl SqlExtension for FunctionCall {
         SimpleExpr::FunctionCall(self).sql_cast(type_name, ty)
     }
 
-    fn extract(self, what: impl ToString) -> TypedExpression {
+    fn extract(self, what: impl ToString) -> SimpleExpr {
         SimpleExpr::FunctionCall(self).extract(what)
     }
 }

@@ -157,13 +157,11 @@ impl TypedExpression {
                         }
                         .with_type(ColumnType::Text)
                     }
-                    (
-                        ColumnType::Time
-                        | ColumnType::Timestamp
-                        | ColumnType::TimestampWithTimeZone
-                        | ColumnType::DateTime,
-                        a,
-                    ) if a.is_integer() => self.expr.extract("epoch"),
+                    (t, a) if t.is_time_like() && a.is_integer() => self
+                        .expr
+                        .extract("epoch")
+                        .cast_as(a.clone())
+                        .with_type(a.clone()),
 
                     (_, other @ ColumnType::Json(JsonType::Any, _)) => Func::cust("to_jsonb")
                         .arg(self.expr)
@@ -179,7 +177,7 @@ impl TypedExpression {
         } else {
             return Err(ConversionError::CantConvert(
                 Box::new(self.ty),
-                Box::new(Cell::Value(other.clone()).into()),
+                Box::new(other.clone().into()),
             ));
         })
     }

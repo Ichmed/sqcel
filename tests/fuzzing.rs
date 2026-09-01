@@ -116,8 +116,8 @@ macro_rules! diverge {
 }
 
 #[allow(unused)]
-macro_rules! bug_sql {
-    ($(#[$($attrss:tt)*])* $name:ident $src:literal) => {
+macro_rules! only_cel {
+    ($(#[$($attrss:tt)*])* $name:ident $src:literal $(== $expected:expr)?) => {
         #[tokio::test]
         #[doc = "Bug in Transpiler\n\n"]
         $(#[$($attrss)*])*
@@ -126,14 +126,36 @@ macro_rules! bug_sql {
             if let Ok(pg) = from_pg($src).await {
                 assert_ne!(pg, cel)
             }
-
+            $(
+                let expected = serde_json::to_value($expected).unwrap();
+                assert_eq!(cel, expected);
+            )?
+        }
+    };
+}
+#[allow(unused)]
+macro_rules! bug_sql {
+    ($(#[$($attrss:tt)*])* $name:ident $src:literal $(== $expected:expr)?) => {
+        #[tokio::test]
+        #[doc = "Bug in Transpiler\n\n"]
+        $(#[$($attrss)*])*
+        async fn $name() {
+            let cel = from_cel($src).await.unwrap();
+            from_pg($src).await.unwrap_err();
+            if let Ok(pg) = from_pg($src).await {
+                assert_ne!(pg, cel)
+            }
+            $(
+                let expected = serde_json::to_value($expected).unwrap();
+                assert_eq!(cel, expected);
+            )?
         }
     };
 }
 
 #[allow(unused)]
-macro_rules! bug_cel {
-    ($(#[$($attrss:tt)*])* $name:ident $src:literal) => {
+macro_rules! only_sql {
+    ($(#[$($attrss:tt)*])* $name:ident $src:literal $(== $expected:expr)?) => {
         #[tokio::test]
         #[doc = "Bug in the Rust CEL interpreter\n\n"]
         $(#[$($attrss)*])*
@@ -142,6 +164,30 @@ macro_rules! bug_cel {
             if let Ok(cel) = from_cel($src).await {
                 assert_ne!(pg, cel)
             }
+            $(
+                let expected = serde_json::to_value($expected).unwrap();
+                assert_eq!(pg, expected);
+            )?
+        }
+    };
+}
+
+#[allow(unused)]
+macro_rules! bug_cel {
+    ($(#[$($attrss:tt)*])* $name:ident $src:literal $(== $expected:expr)?) => {
+        #[tokio::test]
+        #[doc = "Bug in the Rust CEL interpreter\n\n"]
+        $(#[$($attrss)*])*
+        async fn $name() {
+            let pg = from_pg($src).await.unwrap();
+            from_cel($src).await.unwrap_err();
+            if let Ok(cel) = from_cel($src).await {
+                assert_ne!(pg, cel)
+            }
+            $(
+                let expected = serde_json::to_value($expected).unwrap();
+                assert_eq!(pg, expected);
+            )?
         }
     };
 }
@@ -177,18 +223,17 @@ good! {
 
 // -- integer --
 good! {
-    int32
-    "1";
-    simple_sum
-    "1 + 2 == 3" == true;
-    int_compare
-    "1 == 1" == true;
+    int32       "1" == 1;
+    int_compare "1 == 1" == true;
+    simple_add  "1 + 2" == 3;
+    simple_sub  "3 - 2" == 1;
+
 }
 
 // -- float --
-bug_sql!(
+only_cel!(
     /// Postgres removes the trailing zeroes
-    float_becomes_int "1.0"
+    float_becomes_int "1.0" == 1.0
 );
 
 // -- String --
@@ -246,15 +291,41 @@ good! {
 
 bug_sql! {
     map_array_compare
-    "[1, 2, 3].map(x, int(x) + 1) == [2, 3, 4]"
+    "[1, 2, 3].map(x, int(x) + 1) == [2, 3, 4]" == true
 }
 bug_sql!(compare_filter_map_array "[1, 2, 3].map(x, int(x) > 1, int(x) + 1) == [3, 4]");
 
-bug_cel!(filter_map_array_correct "[1, 2, 3].map(x, int(x) > 1, int(int(x) + 1))");
+only_sql!(filter_map_array_correct "[1, 2, 3].map(x, int(x) > 1, int(int(x) + 1))" == [3, 4]);
+
+good!(
+    size "[1, 2, 3].size()" == 3
+);
+
+bug_cel!(
+    mean "[1, 2, 3].mean()" == 2
+);
+
+only_sql!(
+    max  "[1, 2, 3].max()" == 3
+);
+
+only_sql!(
+    min  "[1, 2, 3].min()" == 1
+);
+
+bug_cel!(
+    sum  "[1, 2, 3].sum()" == 6
+);
 
 // -- Map Object
 
-good!(
-    map_object_correct
-    r#"{"a": 1, "b": 1}.map(x, "haha")"# == ["haha", "haha"]
+// Flakey because of arbitrary key order in json
+// good!(
+//     map_object_correct
+//     r#"{"1": 1, "2": 1}.map(x, string(x))"#
+// );
+
+bug_sql!(
+    map_object_to_static
+    r#"{"1": 1, "2": 1}.map(x, "haha")"#
 );

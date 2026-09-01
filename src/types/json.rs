@@ -2,8 +2,9 @@ use std::num::NonZero;
 
 use crate::types::{Cell, ColumnType, Type};
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Default)]
 pub enum JsonType {
+    #[default]
     Any,
     List(Box<Self>),
     Map(JsonObject),
@@ -22,7 +23,7 @@ impl JsonType {
         )]
         match (self, other) {
             (_, ColumnType::Json(Self::Any, _)) => true,
-            (Self::Any | Self::Number, ColumnType::Integer) => true,
+            (Self::Any | Self::Number, x) if x.is_number() => true,
             _ => false,
         }
     }

@@ -1,17 +1,17 @@
-pub mod sql_extensions;
-pub mod structure;
-mod transpiler;
-pub mod types;
+// pub mod sql_extensions;
+// pub mod structure;
+// mod transpiler;
+// pub mod types;
+// pub mod functions;
+// pub mod functions_old;
+// pub mod hacks;
+// pub mod intermediate;
+// pub mod magic;
 
 pub use sea_query::{SimpleExpr as SqlExpr, backend::*, query::Query};
-pub use transpiler::{Error, Result, Transpiler};
-pub mod functions;
-pub mod hacks;
-pub mod intermediate;
-pub mod magic;
+pub use sqcel::{Error, Result, Transpiler, intermediate::variables::Variable};
 
 use clap::Parser;
-use intermediate::variables::Variable;
 use miette::IntoDiagnostic;
 use miette::miette;
 use std::{io::BufRead, path::PathBuf};
@@ -100,19 +100,15 @@ impl Cli {
                 .collect()
         };
 
-        Ok(Transpiler {
-            types,
-            accept_unknown_types,
-            trigger_mode,
-            reduce: !no_reduce,
-
-            ..Default::default()
-        }
-        .to_builder()
-        .vars(variables)
-        .record("NEW")
-        .record("OLD")
-        .build()?)
+        Ok(Transpiler::new()
+            .types(types)
+            .accept_unknown_types(accept_unknown_types)
+            .trigger_mode(trigger_mode)
+            .reduce(!no_reduce)
+            .vars(variables)
+            .record("NEW")
+            .record("OLD")
+            .build()?)
     }
 }
 
@@ -123,7 +119,7 @@ fn main() -> miette::Result<()> {
         if line.is_empty() {
             continue;
         }
-        match hacks::get_plaintext_expression(&line, &transpiler, PostgresQueryBuilder) {
+        match sqcel::hacks::get_plaintext_expression(&line, &transpiler, PostgresQueryBuilder) {
             Ok(sql) => {
                 println!("{sql}");
                 println!();

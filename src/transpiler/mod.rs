@@ -2,24 +2,24 @@ pub mod alias;
 pub mod views;
 
 use crate::{
-    functions::{
-        WrongFunctionArgs,
-        dyn_fn::{CelFunction, DynamicFunction, Signature},
-    },
-    intermediate::variables::Variable,
-    intermediate::{Expression, Rc, ToIntermediate, ToSql},
+    // functions::{
+    //     WrongFunctionArgs,
+    //     dyn_fn::{CelFunction, DynamicFunction, Signature},
+    // },
+    functions::{self, FunctionRegistry},
+    intermediate::{Rc, ToIntermediate, ToSql, variables::Variable},
     structure::{Column, Schema, SqlLayout, Table},
     transpiler::{
         alias::{IncAlias, KeyValueAlias, TableAlias},
         views::ViewSource,
     },
-    types::{ConversionError, Type},
-    types::ColumnType,
+    types::{ColumnType, ConversionError, Type},
 };
 use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
 use derive_builder::Builder;
 use indexmap::IndexMap;
+use itertools::Itertools;
 use miette::{Diagnostic, LabeledSpan};
 use sea_query::{
     Alias, Asterisk, ColumnRef, DynIden, IntoIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
@@ -51,7 +51,8 @@ pub struct Transpiler {
     /// List of known message types
     pub(crate) types: IndexMap<String, protobuf::descriptor::DescriptorProto>,
 
-    pub(crate) functions: IndexMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
+    // pub(crate) functions: IndexMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
+    pub(crate) functions: Rc<FunctionRegistry>,
 
     /// Whether to accept unknown types
     ///
@@ -292,42 +293,42 @@ impl TranspilerBuilder {
         self
     }
 
-    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
-    #[allow(
-        clippy::unnecessary_wraps,
-        reason = "May become fallible in the future"
-    )]
-    pub fn add_dyn_func(
-        &mut self,
-        name: impl ToString,
-        method: bool,
-        args: impl IntoIterator<Item = impl ToString>,
-        code: impl Into<Expression>,
-        rt: Option<Type>,
-    ) -> Result<&mut Self> {
-        let f = CelFunction {
-            code: code.into(),
-            name: name.to_string(),
-            method,
-            args: args.into_iter().map(|x| x.to_string()).collect(),
-            rt: rt.clone(),
-        };
+    // #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
+    // #[allow(
+    //     clippy::unnecessary_wraps,
+    //     reason = "May become fallible in the future"
+    // )]
+    // pub fn add_dyn_func(
+    //     &mut self,
+    //     name: impl ToString,
+    //     method: bool,
+    //     args: impl IntoIterator<Item = impl ToString>,
+    //     code: impl Into<Expression>,
+    //     rt: Option<Type>,
+    // ) -> Result<&mut Self> {
+    //     let f = CelFunction {
+    //         code: code.into(),
+    //         name: name.to_string(),
+    //         method,
+    //         args: args.into_iter().map(|x| x.to_string()).collect(),
+    //         rt: rt.clone(),
+    //     };
 
-        self.functions.get_or_insert_default().insert(
-            Signature {
-                name: name.to_string(),
-                rec: method,
-                args: f.args.len(),
-            },
-            (Rc::new(f), rt),
-        );
-        Ok(self)
-    }
+    //     self.functions.get_or_insert_default().insert(
+    //         Signature {
+    //             name: name.to_string(),
+    //             rec: method,
+    //             args: f.args.len(),
+    //         },
+    //         (Rc::new(f), rt),
+    //     );
+    //     Ok(self)
+    // }
 
-    pub fn add_cel_func(&mut self, code: impl AsRef<str>) -> Result<&mut Self> {
-        let f = CelFunction::parse(&Default::default(), code.as_ref())?;
-        self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
-    }
+    // pub fn add_cel_func(&mut self, code: impl AsRef<str>) -> Result<&mut Self> {
+    //     let f = CelFunction::parse(&Default::default(), code.as_ref())?;
+    //     self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
+    // }
 
     #[allow(clippy::needless_pass_by_value, reason = "To allow &str")]
     pub fn view(
@@ -380,8 +381,8 @@ pub enum Error {
     #[error(transparent)]
     Builder(#[from] TranspilerBuilderError),
 
-    #[error(transparent)]
-    WrongFunctionArgs(#[from] WrongFunctionArgs),
+    // #[error(transparent)]
+    // WrongFunctionArgs(#[from] WrongFunctionArgs),
     #[error(transparent)]
     ConversionError(Box<ConversionError>),
     #[error(transparent)]
@@ -408,6 +409,23 @@ pub enum Error {
     #[error("Not a SELECT statement")]
     NotASelectStatement,
 
+    #[error("No function called {} was found", .0)]
+    FunctionNotFound(String),
+    #[error("This standard CEL function is not currently available.\n{}", .0)]
+    FunctionDisabled(String),
+    #[error("Pattern does not match")]
+    PatternDoesNotMatch,
+    #[error("No matching Pattern. Found the following patterns\n{}", .0.iter().map(|(p, e)| format!("  - {p} ({e})")).join("\n"))]
+    NotMatchingPattern(Vec<(Rc<functions::FunctionPattern>, Self)>),
+    #[error("Wrong number of arguments")]
+    PatternWrongArgNumber,
+    #[error("Expected a free function call")]
+    PatternIsNotAMethod,
+    #[error("Expected a bound method call")]
+    PatternIsAMethod,
+
+    #[error("Cen not reduce type {:?}", .0)]
+    CanNotReduceType(Type),
     #[error("TODO: {}", .0)]
     Todo(&'static str),
 }

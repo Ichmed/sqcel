@@ -25,9 +25,12 @@ serde_yaml = "0.9.34"
 tracing = "0.1.43"
 indexmap = "2.13.0"
 regex = "1.12.3"
+itertools = "0.15.0"
+indoc = "2.0.6"
+strum = { version = "0.28.0", features = ["derive"] }
 
 [features]
-default = ["serde_json", "cli", "thread-safe"]
+default = ["serde_json", "cli", "thread-safe", "fuzzing"]
 serde_json = ["dep:serde_json"]
 cli = ["dep:clap", "miette/fancy"]
 fuzzing = []

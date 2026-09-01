@@ -5,7 +5,7 @@ pub mod variables;
 
 use crate::{
     Error, Result, Transpiler,
-    functions::{Function, iter::Iterable},
+    functions::{FunctionBundle, iter::Iterable},
     intermediate::{
         access_chain::AccessChain,
         to_sql::try_iterate_fallback,
@@ -13,13 +13,12 @@ use crate::{
     },
     sql_extensions::SqlExtension,
     transpiler::str_alias,
-    types::Cell,
-    types::{SqlType, Type, TypedExpression, json::JsonType},
+    types::{Cell, SqlType, Type, TypedExpression, json::JsonType},
 };
 use cel_interpreter::{Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
 use sea_query::{
-    BinOper, CaseStatement, DynIden, ExprTrait, IntoIden, SimpleExpr, Value,
+    BinOper, CaseStatement, ExprTrait, IntoIden, SimpleExpr, Value,
     extension::postgres::PgExpr,
 };
 use std::fmt::{Debug, Display};
@@ -27,7 +26,7 @@ pub use to_sql::ToSql;
 
 pub type Rc<T> = sea_query::RcOrArc<T>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Expression {
     inner: Rc<ExpressionInner>,
 }
@@ -40,7 +39,7 @@ impl std::ops::Deref for Expression {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExpressionInner {
     Access(AccessChain),
     Index(Box<Expression>, Box<Expression>),
@@ -52,7 +51,7 @@ pub enum ExpressionInner {
     Or(Box<Expression>, Box<Expression>),
     And(Box<Expression>, Box<Expression>),
     Unary(UnaryOp, Box<Expression>),
-    FunctionCall(Rc<dyn Function + 'static>),
+    FunctionCall(FunctionBundle),
 }
 
 impl ExpressionInner {
@@ -126,8 +125,8 @@ impl ToSql for Atom {
         .into()
     }
 
-    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
-        try_iterate_fallback(self, tp, &var)
+    fn try_iterate(&self, tp: &Transpiler, var: impl IntoIden) -> Result<Iterable> {
+        try_iterate_fallback(self, tp, &var.into_iden())
     }
 }
 
@@ -289,7 +288,7 @@ impl ToSql for Expression {
                     UnaryOp::DoubleNot | UnaryOp::DoubleMinus => expresion.to_sql(tp)?.expr,
                 },
             },
-            ExpressionInner::FunctionCall(x) => x.to_sql(tp)?,
+            ExpressionInner::FunctionCall(bundle) => bundle.to_sql(tp)?,
             ExpressionInner::Index(expression, index) => {
                 Self::index(tp, expression.as_ref(), index)?
             }
@@ -313,11 +312,12 @@ impl ToSql for Expression {
             | ExpressionInner::Or(_, _)
             | ExpressionInner::And(_, _) => Cell::Value(SqlType::Boolean).into(),
             ExpressionInner::Unary(_, expression) => expression.returntype(tp),
-            ExpressionInner::FunctionCall(function) => function.returntype(tp),
+            ExpressionInner::FunctionCall(bundle) => bundle.returntype(tp),
         }
     }
 
-    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+    fn try_iterate(&self, tp: &Transpiler, var: impl IntoIden) -> Result<Iterable> {
+        let var = var.into_iden();
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.try_iterate(tp, var),
             ExpressionInner::Variable(variable) => variable.try_iterate(tp, var),
@@ -428,38 +428,52 @@ impl Expression {
     }
 }
 
-impl Debug for ExpressionInner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Access(arg0) => f.debug_tuple("Access").field(arg0).finish(),
-            Self::Index(arg0, arg1) => f.debug_tuple("Index").field(arg0).field(arg1).finish(),
-            Self::Variable(arg0) => f.debug_tuple("Variable").field(arg0).finish(),
-            Self::Arithmetic(arg0, arg1, arg2) => f
-                .debug_tuple("Arithmetic")
-                .field(arg0)
-                .field(arg1)
-                .field(arg2)
-                .finish(),
-            Self::Relation(arg0, arg1, arg2) => f
-                .debug_tuple("Relation")
-                .field(arg0)
-                .field(arg1)
-                .field(arg2)
-                .finish(),
-            Self::Ternary(arg0, arg1, arg2) => f
-                .debug_tuple("Ternary")
-                .field(arg0)
-                .field(arg1)
-                .field(arg2)
-                .finish(),
-            Self::Or(arg0, arg1) => f.debug_tuple("Or").field(arg0).field(arg1).finish(),
-            Self::And(arg0, arg1) => f.debug_tuple("And").field(arg0).field(arg1).finish(),
-            Self::Unary(arg0, arg1) => f.debug_tuple("Unary").field(arg0).field(arg1).finish(),
-            Self::FunctionCall(_) => f.debug_tuple("FunctionCall").finish_non_exhaustive(),
+// impl Debug for ExpressionInner {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             Self::Access(arg0) => f.debug_tuple("Access").field(arg0).finish(),
+//             Self::Index(arg0, arg1) => f.debug_tuple("Index").field(arg0).field(arg1).finish(),
+//             Self::Variable(arg0) => f.debug_tuple("Variable").field(arg0).finish(),
+//             Self::Arithmetic(arg0, arg1, arg2) => f
+//                 .debug_tuple("Arithmetic")
+//                 .field(arg0)
+//                 .field(arg1)
+//                 .field(arg2)
+//                 .finish(),
+//             Self::Relation(arg0, arg1, arg2) => f
+//                 .debug_tuple("Relation")
+//                 .field(arg0)
+//                 .field(arg1)
+//                 .field(arg2)
+//                 .finish(),
+//             Self::Ternary(arg0, arg1, arg2) => f
+//                 .debug_tuple("Ternary")
+//                 .field(arg0)
+//                 .field(arg1)
+//                 .field(arg2)
+//                 .finish(),
+//             Self::Or(arg0, arg1) => f.debug_tuple("Or").field(arg0).field(arg1).finish(),
+//             Self::And(arg0, arg1) => f.debug_tuple("And").field(arg0).field(arg1).finish(),
+//             Self::Unary(arg0, arg1) => f.debug_tuple("Unary").field(arg0).field(arg1).finish(),
+//             Self::FunctionCall(_, _) => f.debug_tuple("FunctionCall").finish_non_exhaustive(),
+//         }
+//     }
+// }
+
+pub trait ToIntermediate {
+    fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression>;
+}
+
+impl From<ExpressionInner> for Expression {
+    fn from(value: ExpressionInner) -> Self {
+        Self {
+            inner: Rc::new(value),
         }
     }
 }
 
-pub trait ToIntermediate {
-    fn to_sqcel(&self, tp: &Transpiler) -> Result<Expression>;
+impl From<bool> for Expression {
+    fn from(value: bool) -> Self {
+        ExpressionInner::Variable(Variable::Atom(Atom::Bool(value))).into()
+    }
 }

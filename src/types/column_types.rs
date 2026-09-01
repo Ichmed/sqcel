@@ -2,7 +2,11 @@ use std::str::FromStr;
 
 use sea_query::{Alias, DynIden, IntoIden, PgInterval, SeaRc, StringLen};
 
-use crate::{intermediate::Rc, types::json::JsonType};
+use crate::{
+    Error, Result,
+    intermediate::Rc,
+    types::{Cell, json::JsonType},
+};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ColumnType {
@@ -97,18 +101,50 @@ impl ColumnType {
     }
 
     #[must_use]
-    pub const fn is_integer(&self) -> bool {
+    pub const fn is_signed_integer(&self) -> bool {
         matches!(
             self,
-            Self::TinyUnsigned
-                | Self::SmallUnsigned
-                | Self::Unsigned
-                | Self::BigUnsigned
-                | Self::TinyInteger
-                | Self::SmallInteger
-                | Self::Integer
-                | Self::BigInteger
+            Self::TinyInteger | Self::SmallInteger | Self::Integer | Self::BigInteger
         )
+    }
+
+    #[must_use]
+    pub const fn is_unsigned_integer(&self) -> bool {
+        matches!(
+            self,
+            Self::TinyUnsigned | Self::SmallUnsigned | Self::Unsigned | Self::BigUnsigned
+        )
+    }
+
+    #[must_use]
+    pub const fn is_integer(&self) -> bool {
+        self.is_signed_integer() || self.is_unsigned_integer()
+    }
+
+    #[must_use]
+    pub const fn is_time_like(&self) -> bool {
+        matches!(
+            self,
+            Self::Time | Self::Timestamp | Self::TimestampWithTimeZone | Self::DateTime,
+        )
+    }
+
+    #[must_use]
+    pub const fn is_string(&self) -> bool {
+        matches!(self, Self::Text | Self::String(_) | Self::Char(_))
+    }
+
+    #[must_use]
+    pub fn to_json_type(&self) -> Result<JsonType> {
+        Ok(match self {
+            x if x.is_string() => JsonType::String,
+            x if x.is_number() => JsonType::Number,
+            Self::Boolean => JsonType::Boolean,
+            Self::Json(_, _) => JsonType::Any,
+            Self::Null => JsonType::Null,
+            Self::Array(x) => JsonType::List(Box::new(x.to_json_type()?)),
+            _ => return Err(Error::Todo("Not a json compatible type")),
+        })
     }
 
     cast_list!(
@@ -119,6 +155,12 @@ impl ColumnType {
         Double -> Float;
         Float -> Double;
     );
+
+    /// Wraps self in a `Cell::Value`
+    #[must_use]
+    pub const fn cell(self) -> Cell {
+        Cell::Value(self)
+    }
 }
 
 pub struct UnknownType(pub String);
@@ -126,15 +168,15 @@ pub struct UnknownType(pub String);
 impl FromStr for ColumnType {
     type Err = UnknownType;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(match s {
             "bool" => Self::Boolean,
             "text" => Self::Text,
             "float" => Self::Float,
             // "bytes" => ColumnType::Binary(_),
             "double" => Self::Double,
-            // "json" => ColumnType::JsonText(_),
-            // "jsonb" => ColumnType::Jsonb(_),
+            "json" => Self::Json(JsonType::Any, true),
+            "jsonb" => Self::Json(JsonType::Any, false),
             // "char" => ColumnType::Char(_),
             // "string" => ColumnType::String(_),
             "bytea" => Self::Blob,

@@ -21,13 +21,13 @@ pub fn get_plaintext_expression(
 }
 
 #[cfg(test)]
+#[allow(unused)]
 pub(crate) fn postgres(code: &str) -> Result<String> {
     use sea_query::PostgresQueryBuilder;
 
     get_plaintext_expression(
         code,
-        #[allow(clippy::missing_panics_doc, reason = "This will never panic")]
-        &Transpiler::new().reduce(true).build().unwrap(),
+        &Transpiler::new().reduce(true).build()?,
         PostgresQueryBuilder,
     )
 }

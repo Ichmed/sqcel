@@ -8,14 +8,14 @@ use crate::{
     sql_extensions::{IntoSqlExpression, SqlExtension},
     structure::{Column, Table},
     transpiler::{Error, Result},
-    types::{JsonType, Type, TypedExpression},
     types::{Cell, ColumnType, JsonObject},
+    types::{JsonType, Type, TypedExpression},
 };
 use indexmap::IndexMap;
-use sea_query::{Alias, DynIden, Func, Query, SelectStatement, SimpleExpr, TableRef};
+use sea_query::{Alias, Func, IntoIden, Query, SelectStatement, SimpleExpr, TableRef};
 use std::sync::Arc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Variable {
     /// A JSON-Object or Proto-Message
     Object(Object),
@@ -31,7 +31,7 @@ pub enum Variable {
     SqlAny(Box<SimpleExpr>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Object {
     pub data: Vec<(Expression, Expression)>,
     /// The schema to validate this object against.
@@ -173,7 +173,8 @@ impl ToSql for Variable {
         }
     }
 
-    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+    fn try_iterate(&self, tp: &Transpiler, var: impl IntoIden) -> Result<Iterable> {
+        let var = var.into_iden();
         Ok(match self {
             Self::Object(object) => Self::List(object.data.iter().map(|x| x.0.clone()).collect())
                 .try_iterate(tp, var)?,
@@ -221,7 +222,7 @@ impl From<i64> for Variable {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Atom {
     Null,
     Bool(bool),

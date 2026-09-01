@@ -13,7 +13,7 @@ use crate::{
     types::{Cell, ColumnType, JsonType, Type, TypedExpression},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AccessChain {
     pub(crate) head: Option<Box<Expression>>,
     pub(crate) idents: Vec<Ident>,
@@ -96,7 +96,8 @@ impl ToSql for AccessChain {
         }
     }
 
-    fn try_iterate(&self, tp: &Transpiler, var: DynIden) -> Result<Iterable> {
+    fn try_iterate(&self, tp: &Transpiler, var: impl IntoIden) -> Result<Iterable> {
+        let var = var.into_iden();
         Ok(match (&self.head, self.idents.as_slice()) {
             (None, p @ [schema, table, column]) if let Some((_, ty)) = tp.layout.column(p) => {
                 json_to_iterable(

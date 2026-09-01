@@ -26,7 +26,7 @@ use super::Pattern;
 #[must_use]
 pub fn contains() -> Function {
     Function::define_disabled(
-        func_args!(Text.endsWith(Text) -> Boolean),
+        func_args!(Text.contains(Text) -> Boolean),
         indoc!(
             r#"
             contains - Tests whether the string operand contains the substring.

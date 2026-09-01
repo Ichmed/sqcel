@@ -447,7 +447,7 @@ impl Default for FunctionRegistry {
             .register(cast("int", ColumnType::Integer))
             .register(cast("string", ColumnType::Text))
             .register(cast("bool", ColumnType::Boolean))
-            .register(cast("double", ColumnType::Double))
+            .register(cast("float", ColumnType::Double))
             .register(cast("timestamp", ColumnType::TimestampWithTimeZone))
             .register(reduce::min())
             .register(reduce::max())

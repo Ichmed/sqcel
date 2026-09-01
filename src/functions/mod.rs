@@ -1,259 +1,488 @@
-pub mod cast;
-pub mod dyn_fn;
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display, Write},
+};
+
+pub mod aggregate;
 pub mod iter;
 pub mod json;
-mod list_oper;
-mod map;
-pub mod or;
+pub mod optional;
 pub mod reduce;
-pub mod string_operations;
+pub mod string;
 
-use std::{any::Any, fmt::Display, sync::Arc};
+use itertools::Itertools;
 
 use crate::{
-    Transpiler,
-    functions::{
-        cast::cast,
-        reduce::{Reduce, Reducer},
-        string_operations::{Contains, EndsWith, Matches, StartsWith},
-    },
-    intermediate::{Expression, ExpressionInner, Rc, ToSql},
-    transpiler::{Error, Result},
-    types::SqlType,
+    Error, Result, Transpiler,
+    functions::Pattern::Lambda,
+    intermediate::{Expression, Rc, ToSql},
+    types::{ColumnType, Type, TypedExpression},
 };
-use dyn_fn::{DynFunc, Signature};
-use list_oper::{all, any};
-use map::Map;
 
-use sea_query::{Query, SelectStatement, SimpleExpr as SqlExpression, SubQueryStatement};
+type CustomFunctionParser = dyn Fn(&Transpiler, &FunctionArgs) -> std::prelude::v1::Result<TypedExpression, Error>
+    + 'static
+    + Send
+    + Sync;
 
-pub trait Function: ToSql + Any + Send + Sync {}
-
-macro_rules! r_arm {
-    (($name:literal, $rec:ident, $var:expr, $agg:expr) $variant:ident) => {{
-        match ($rec, $agg) {
-            (Some(x), agg) => Reduce::new(Reducer::$variant, x, $var, agg)?,
-            (None, [x]) => Reduce::new(Reducer::$variant, x, $var, Default::default())?,
-            (rec, args) => Err(WrongFunctionArgs::given($name, rec, args)
-                .allowed(false, 1)
-                .allowed(true, 0))?,
-        }
-    }};
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FunctionOrigin {
+    Cel,
+    Disabled(String),
+    Sqcel,
+    Custom,
 }
 
-#[allow(clippy::match_same_arms, reason = "Make valid call patterns explicit")]
-pub fn get(
-    tp: &Transpiler,
-    name: &Expression,
-    rec: Option<&Expression>,
-    args: &[Expression],
-) -> Result<Rc<dyn Function>> {
-    if let ExpressionInner::Access(name) = &**name {
-        let name = name
-            .to_path()
-            .ok_or(Error::Todo("Function paths can't be empty"))?;
-        let name = name.as_ref();
+#[derive(Clone)]
+pub struct Function {
+    pattern: Rc<FunctionPattern>,
+    parser: Rc<CustomFunctionParser>,
+    description: String,
+    origin: FunctionOrigin,
+}
 
-        Ok(match (name, rec, args) {
-            ("or", Some(rec), [alt]) => Arc::new(or::Or {
-                rec: rec.clone(),
-                alt: alt.clone(),
-            }),
-
-            ("collect_object", Some(x), []) => Arc::new(json::CollectJsonRecursive(x.clone())),
-            ("collect_object", rec, args) => {
-                Err(WrongFunctionArgs::given("collect_object", rec, args).allowed(false, 1))?
-            }
-
-            ("int", None, [x]) => cast(SqlType::Integer, x),
-            ("int", rec, args) => {
-                Err(WrongFunctionArgs::given("int", rec, args).allowed(false, 1))?
-            }
-
-            ("string", None, [x]) => cast(SqlType::Text, x),
-            ("string", rec, args) => {
-                Err(WrongFunctionArgs::given("string", rec, args).allowed(false, 1))?
-            }
-
-            ("bool", None, [x]) => cast(SqlType::Boolean, x),
-            ("bool", rec, args) => {
-                Err(WrongFunctionArgs::given("bool", rec, args).allowed(false, 1))?
-            }
-
-            ("double", None, [x]) => cast(SqlType::Double, x),
-            ("double", rec, args) => {
-                Err(WrongFunctionArgs::given("double", rec, args).allowed(false, 1))?
-            }
-
-            ("time", None, [x]) => cast(SqlType::Time, x),
-            ("time", rec, args) => {
-                Err(WrongFunctionArgs::given("time", rec, args).allowed(false, 1))?
-            }
-
-            ("min", a, [x, b @ ..]) => r_arm!(("min", a, Some(x), b) Min),
-            ("min", Some(a), []) => Reduce::new(Reducer::Min, a, None, &[])?,
-
-            ("max", a, [x, b @ ..]) => r_arm!(("count", a, Some(x), b) Max),
-            ("max", Some(a), []) => Reduce::new(Reducer::Max, a, None, &[])?,
-
-            ("count", a, [x, b @ ..]) => r_arm!(("count", a, Some(x), b) Count),
-            ("count", Some(a), []) => Reduce::new(Reducer::Count, a, None, &[])?,
-            ("size", Some(a), []) => Reduce::new(Reducer::Count, a, None, &[])?,
-            ("size", None, [a]) => Reduce::new(Reducer::Count, a, None, &[])?,
-
-            ("sum", a, [x, b @ ..]) => r_arm!(("sum", a, Some(x), b) Sum),
-            ("sum", Some(a), []) => Reduce::new(Reducer::Sum, a, None, &[])?,
-
-            ("mean", a, [x, b @ ..]) => r_arm!(("mean", a, Some(x), b) Mean),
-            ("mean", Some(a), []) => Reduce::new(Reducer::Mean, a, None, &[])?,
-
-            ("map", Some(rec), [var, func]) => Map::new(rec, var, None, func)?,
-            ("map", Some(rec), [var, filter, func]) => Map::new(rec, var, Some(filter), func)?,
-            ("map", rec, args) => Err(WrongFunctionArgs::given("map", rec, args)
-                .allowed(true, 2)
-                .allowed(true, 3))?,
-
-            // Implement .filter(x, pred) as .map(x, pred, x)
-            ("filter", Some(rec), [var, filter]) => Map::new(rec, var, Some(filter), var)?,
-            ("filter", rec, args) => {
-                Err(WrongFunctionArgs::given("filter", rec, args).allowed(true, 2))?
-            }
-
-            // ("latest", None, [amount]) => Latest::new(Some(amount), None)?,
-            // ("latest", None, [amount, pred]) => Latest::new(Some(amount), Some(pred))?,
-            ("latest", rec, args) => Err(WrongFunctionArgs::given("latest", rec, args)
-                .allowed(false, 1)
-                .allowed(false, 2))?,
-
-            ("all", Some(list), [var, predicate]) => all(list, var, predicate)?,
-            ("all", rec, args) => Err(WrongFunctionArgs::given("all", rec, args).allowed(true, 2))?,
-
-            ("exists", Some(list), [var, predicate]) => any(list, var, predicate)?,
-            ("exists", rec, args) => {
-                Err(WrongFunctionArgs::given("exists", rec, args).allowed(true, 2))?
-            }
-
-            ("starts_with", Some(rec), [pattern]) => Arc::new(StartsWith {
-                rec: rec.clone(),
-                arg: pattern.clone(),
-            }),
-            ("ends_with", Some(rec), [pattern]) => Arc::new(EndsWith {
-                rec: rec.clone(),
-                arg: pattern.clone(),
-            }),
-            ("matches", Some(rec), [pattern]) => Arc::new(Matches {
-                rec: rec.clone(),
-                arg: pattern.clone(),
-            }),
-            ("contains", Some(rec), [pattern]) => Arc::new(Contains {
-                rec: rec.clone(),
-                arg: pattern.clone(),
-            }),
-
-            (name, rec, args) => get_dynamic_function(tp, name, rec, args)?,
-        })
-    } else {
-        Err(Error::Todo("Only idents can be function names"))
+impl PartialEq for Function {
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern == other.pattern
+            // && self.parser == other.parser
+            && self.description == other.description
+            && self.origin == other.origin
     }
 }
 
-fn get_dynamic_function(
-    tp: &Transpiler,
-    name: &str,
-    rec: Option<&Expression>,
-    args: &[Expression],
-) -> Result<Rc<DynFunc>> {
-    Ok(Rc::new(
-        tp.functions
-            .get(&Signature {
-                name: name.to_string(),
-                rec: rec.is_some(),
-                args: args.len(),
-            })
-            .map(|(f, rt)| DynFunc {
-                f: f.clone(),
-                rec: rec.cloned(),
-                args: args.to_vec(),
-                rt: rt.clone(),
-            })
-            .ok_or(Error::Todo("Unknown function or arg configuration"))?,
-    ))
-}
-
-#[derive(Debug)]
-pub struct WrongFunctionArgs {
-    name: String,
-    #[allow(dead_code)]
-    given: (Option<Expression>, Vec<Expression>),
-    expected: Vec<(bool, usize)>,
-}
-
-impl WrongFunctionArgs {
-    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
-    pub fn given(name: impl ToString, rec: Option<&Expression>, args: &[Expression]) -> Self {
-        Self {
-            name: name.to_string(),
-            given: (rec.cloned(), args.to_vec()),
-            expected: Default::default(),
-        }
-    }
-
-    fn allowed(mut self, rec: bool, args: usize) -> Self {
-        self.expected.push((rec, args));
-        self
-    }
-}
-
-impl std::error::Error for WrongFunctionArgs {}
-
-impl Display for WrongFunctionArgs {
+impl Debug for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Invalid call to ")?;
-        f.write_str(&self.name)?;
+        f.debug_struct("Function")
+            .field("pattern", &self.pattern)
+            .field("origin", &self.origin)
+            .finish_non_exhaustive()
+    }
+}
 
-        if !self.expected.is_empty() {
-            f.write_str("\nValid call structures:")?;
+impl Function {
+    pub fn define(
+        pattern: FunctionPattern,
+        description: impl Into<String>,
+        parser: impl Fn(&Transpiler, &FunctionArgs) -> Result<TypedExpression> + 'static + Send + Sync,
+    ) -> Self {
+        Self::define_with_origin(pattern, description, parser, FunctionOrigin::Custom)
+    }
 
-            for (rec, args) in &self.expected {
-                f.write_str("\n- ")?;
-                if *rec {
-                    f.write_str("x.")?;
-                }
-                self.name.fmt(f)?;
-                f.write_str("(")?;
-                if *args > 0 {
-                    f.write_str("arg_0")?;
-                }
-                for i in 1..*args {
-                    f.write_str(", arg_")?;
-                    i.fmt(f)?;
-                }
-
-                f.write_str(")")?;
-            }
+    fn define_with_origin(
+        pattern: FunctionPattern,
+        description: impl Into<String>,
+        parser: impl Fn(&Transpiler, &FunctionArgs) -> Result<TypedExpression> + 'static + Send + Sync,
+        origin: FunctionOrigin,
+    ) -> Self {
+        Self {
+            pattern: Rc::new(pattern),
+            parser: Rc::new(parser),
+            description: description.into(),
+            origin,
         }
+    }
+
+    fn define_disabled(
+        pattern: FunctionPattern,
+        description: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::define_with_origin(
+            pattern,
+            description,
+            |_, _| unimplemented!(),
+            FunctionOrigin::Disabled(reason.into()),
+        )
+    }
+
+    fn do_match(&self, receiver: Option<&Expression>, args: &[Expression]) -> Result<&Self> {
+        self.pattern
+            .do_match(receiver, args)
+            .map(|()| self)
+            .and_then(|v| match self.origin {
+                FunctionOrigin::Disabled(ref reason) => {
+                    Err(Error::FunctionDisabled(reason.clone()))
+                }
+                _ => Ok(v),
+            })
+    }
+
+    pub fn parse(&self, tp: &Transpiler, args: &FunctionArgs) -> Result<TypedExpression> {
+        (self.parser)(tp, args)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionBundle {
+    pub function: Rc<Function>,
+    pub args: FunctionArgs,
+}
+
+impl ToSql for FunctionBundle {
+    fn returntype(&self, tp: &Transpiler) -> Type {
+        match (self.function.pattern).returns {
+            ReturnType::Static(ref x) => x.clone(),
+            ReturnType::SameAsReceiver => self.args.receiver().map_or_default(|x| x.returntype(tp)),
+            ReturnType::SameAsReceiverInner => self
+                .args
+                .receiver()
+                .map_or_default(|x| x.returntype(tp))
+                .array_type()
+                .cloned()
+                .unwrap_or_default()
+                .into(),
+            ReturnType::SameAsArg(index) => {
+                self.args.arg(index).map_or_default(|x| x.returntype(tp))
+            }
+            ReturnType::Custom(_, ref f) => f(tp, &self.args),
+        }
+    }
+
+    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
+        self.function.parse(tp, &self.args)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionArgs {
+    pub receiver: Option<Expression>,
+    pub args: Vec<Expression>,
+}
+
+impl FunctionArgs {
+    #[must_use]
+    pub fn new(receiver: Option<Expression>, mut args: Vec<Expression>) -> Self {
+        args.reverse();
+        Self { receiver, args }
+    }
+
+    pub fn receiver(&self) -> Result<&Expression> {
+        self.receiver.as_ref().ok_or(Error::PatternIsNotAMethod)
+    }
+
+    pub fn arg(&self, index: usize) -> Result<&Expression> {
+        self.args.get(index).ok_or(Error::PatternWrongArgNumber)
+    }
+
+    #[must_use]
+    pub fn variadics(&self, start: usize) -> &[Expression] {
+        if start < self.args.len() {
+            &self.args[start..]
+        } else {
+            &[]
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// Accept any expression of the given type
+    ///
+    /// If type is `Type::Unknown` accept all expressions
+    Expression(Type),
+    ExpressionCast(Type),
+    Ident,
+    Lambda,
+    Custom {
+        display: String,
+        accepts: fn(&Expression) -> Result<()>,
+    },
+}
+
+fn _a(x: Function) {
+    fn i(_: impl Send + Sync) {}
+    i(x);
+}
+
+impl PartialEq for Pattern {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Expression(l0), Self::Expression(r0))
+            | (Self::ExpressionCast(l0), Self::ExpressionCast(r0)) => l0 == r0,
+            (Self::Custom { display: l, .. }, Self::Custom { display: r, .. }) => l == r,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+impl Pattern {
+    fn do_match(&self, expr: &Expression) -> Result<()> {
+        match self {
+            Self::Expression(_) | Self::ExpressionCast(_) | Lambda => Ok(()),
+            Self::Custom { accepts, .. } => accepts(expr),
+            Self::Ident => expr
+                .as_single_ident()
+                .map_err(|_| Error::PatternDoesNotMatch)
+                .map(|_| ()),
+        }
+    }
+}
+
+impl<T: Into<Type>> From<T> for Pattern {
+    fn from(value: T) -> Self {
+        Self::Expression(value.into())
+    }
+}
+
+impl Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expression(t) => Debug::fmt(&(&t.col_type().cloned().unwrap_or_default()), f),
+            Self::ExpressionCast(t) => {
+                f.write_char('<')?;
+                Debug::fmt(&(&t.col_type().cloned().unwrap_or_default()), f)?;
+                f.write_char('>')
+            }
+            Self::Custom {
+                display,
+                accepts: _,
+            } => f.write_str(display),
+            Self::Ident => f.write_char('x'),
+            Self::Lambda => f.write_str("f(x)"),
+        }
+    }
+}
+
+type CustomReturnTypeFn = Rc<dyn Fn(&Transpiler, &FunctionArgs) -> Type + Send + Sync + 'static>;
+
+#[derive(Clone)]
+pub enum ReturnType {
+    Static(Type),
+    SameAsReceiver,
+    SameAsReceiverInner,
+    SameAsArg(usize),
+    Custom(String, CustomReturnTypeFn),
+}
+
+impl PartialEq for ReturnType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Static(l0), Self::Static(r0)) => l0 == r0,
+            (Self::SameAsArg(l0), Self::SameAsArg(r0)) => l0 == r0,
+            (Self::Custom(l0, _), Self::Custom(r0, _)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+impl Debug for ReturnType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Static(arg0) => f.debug_tuple("Static").field(arg0).finish(),
+            Self::SameAsReceiver => write!(f, "SameAsReceiver"),
+            Self::SameAsReceiverInner => write!(f, "SameAsReceiverInner"),
+            Self::SameAsArg(arg0) => f.debug_tuple("SameAsArg").field(arg0).finish(),
+            Self::Custom(arg0, _) => f.debug_tuple("Custom").field(arg0).finish_non_exhaustive(),
+        }
+    }
+}
+
+impl<T: Into<Type>> From<T> for ReturnType {
+    fn from(value: T) -> Self {
+        Self::Static(value.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionPattern {
+    name: String,
+    receiver: Option<Pattern>,
+    args: Vec<Pattern>,
+    variadic: Option<Pattern>,
+    returns: ReturnType,
+}
+
+impl FunctionPattern {
+    fn do_match(&self, receiver: Option<&Expression>, args: &[Expression]) -> Result<()> {
+        match (receiver, &self.receiver) {
+            (None, None) => None,
+            (Some(receiver), Some(pattern)) => Some(pattern.do_match(receiver)?),
+            (Some(_), None) => return Err(Error::PatternIsNotAMethod),
+            (None, Some(_)) => return Err(Error::PatternIsAMethod),
+        };
+
+        let mut args_iter = args.iter();
+        self.args
+            .iter()
+            .map(|pat| pat.do_match(args_iter.next().ok_or(Error::PatternWrongArgNumber)?))
+            .collect::<Result<Vec<_>>>()?;
+        args_iter
+            .map(|exp| {
+                self.variadic
+                    .as_ref()
+                    .ok_or(Error::PatternWrongArgNumber)?
+                    .do_match(exp)
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(())
     }
 }
 
-#[must_use]
-pub fn to_select(expr: SqlExpression) -> SelectStatement {
-    match expr {
-        SqlExpression::SubQuery(_, boxed) => match *boxed {
-            SubQueryStatement::SelectStatement(select_statement) => select_statement,
-            _ => unimplemented!(
-                "SQCEL should never generate a statement that is not a select statement"
-            ),
-        },
-        x => Query::select().expr(x).take(),
+impl Display for FunctionPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(receiver) = &self.receiver {
+            Display::fmt(&receiver, f)?;
+            f.write_char('.')?;
+        }
+        f.write_str(&self.name)?;
+        f.write_char('(')?;
+        let mut args = self.args.iter();
+        if let Some(pat) = args.next() {
+            Display::fmt(&pat, f)?;
+        }
+        for pat in args.chain(&self.variadic) {
+            f.write_str(", ")?;
+            Display::fmt(&pat, f)?;
+        }
+        if self.variadic.is_some() {
+            f.write_str("...")?;
+        }
+        f.write_str(") -> ")?;
+
+        match &self.returns {
+            ReturnType::Static(r) => Debug::fmt(&r.col_type().cloned().unwrap_or_default(), f),
+            ReturnType::SameAsReceiver => Debug::fmt(&self.receiver, f),
+            ReturnType::SameAsReceiverInner => match &self.receiver {
+                Some(Pattern::Expression(x)) => {
+                    Debug::fmt(&x.array_type().cloned().unwrap_or_default(), f)
+                }
+                _x => f.write_str("Content of Receiver"),
+            },
+
+            ReturnType::SameAsArg(i) => Debug::fmt(&self.args[*i], f),
+            ReturnType::Custom(display, _) => f.write_str(display),
+        }
     }
 }
 
-// #[must_use]
-// pub fn subquery(s: SelectStatement) -> TypedExpression {
-//     TypedExpression {
-//         ty: Type::RecordSet(Default::default()),
-//         expr: SqlExpression::SubQuery(None, Box::new(SubQueryStatement::SelectStatement(s))),
-//     }
-// }
+#[macro_export]
+macro_rules! func_args {
+    ($ident:ident (self: $receiver:expr $(,$arg:expr)*) -> $rt:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::types::ColumnType::*;
+            $crate::functions::FunctionPattern {
+                name: stringify!($ident).to_owned(),
+                receiver: Some($receiver.into()),
+                args: vec![$($arg.into(),)*],
+                variadic: None,
+                returns: $rt.into(),
+            }}
+    };
+    ($ident:ident ($($arg:expr),*) -> $rt:expr) => {{
+            #[allow(unused_imports)]
+            use $crate::types::ColumnType::*;
+            $crate::functions::FunctionPattern {
+                name: stringify!($ident).to_owned(),
+                receiver: None,
+                args: vec![$($arg.into(),)*],
+                variadic: None,
+                returns: $rt.into(),
+            }}
+    };
+}
+
+#[derive(Debug)]
+pub struct FunctionRegistry {
+    inner: HashMap<String, Vec<Rc<Function>>>,
+}
+
+impl FunctionRegistry {
+    pub fn register(&mut self, f: Function) -> &mut Self {
+        self.inner
+            .entry(f.pattern.name.clone())
+            .or_default()
+            .push(Rc::new(f));
+        self
+    }
+
+    pub fn get(
+        &self,
+        name: &str,
+        receiver: Option<&Expression>,
+        args: &[Expression],
+    ) -> Result<Rc<Function>> {
+        let (matching_patterns, not_matching_patterns): (Vec<_>, _) = self
+            .inner
+            .get(name)
+            .ok_or_else(|| Error::FunctionNotFound(name.to_owned()))?
+            .iter()
+            .map(|x| {
+                x.do_match(receiver, args)
+                    .map_err(|err| (x.pattern.clone(), err))
+                    .map(|_| Rc::clone(x))
+            })
+            .partition_result();
+
+        if let Some(m) = matching_patterns.first() {
+            Ok(m.clone())
+        } else {
+            Err(Error::NotMatchingPattern(not_matching_patterns))
+        }
+    }
+}
+
+fn cast(name: &str, ty: ColumnType) -> Function {
+    Function::define_with_origin(
+        FunctionPattern {
+            name: name.to_owned(),
+            receiver: None,
+            args: vec![Pattern::ExpressionCast(ty.clone().into())],
+            variadic: None,
+            returns: ty.clone().into(),
+        },
+        format!("Coerce the argument into a {name}"),
+        move |tp, x| Ok(x.arg(0)?.to_sql(tp)?.convert(tp, &ty)?),
+        FunctionOrigin::Cel,
+    )
+}
+
+impl Default for FunctionRegistry {
+    fn default() -> Self {
+        let mut reg = Self {
+            inner: Default::default(),
+        };
+
+        reg.register(json::collect_object())
+            .register(cast("int", ColumnType::Integer))
+            .register(cast("string", ColumnType::Text))
+            .register(cast("bool", ColumnType::Boolean))
+            .register(cast("double", ColumnType::Double))
+            .register(cast("timestamp", ColumnType::TimestampWithTimeZone))
+            .register(reduce::min())
+            .register(reduce::max())
+            .register(reduce::mean())
+            .register(reduce::sum())
+            .register(reduce::size())
+            .register(aggregate::count())
+            .register(iter::map())
+            .register(iter::filter())
+            .register(iter::filter_map())
+            .register(iter::all())
+            .register(iter::exists())
+            .register(string::starts_with())
+            .register(string::ends_with())
+            .register(string::matches())
+            .register(string::contains())
+            .register(string::size())
+            .register(optional::or());
+
+        reg
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use crate::{Transpiler, functions::FunctionRegistry, intermediate::ToIntermediate};
+
+    #[test]
+    fn print() {
+        let reg = FunctionRegistry::default();
+
+        let tp = Transpiler::new().build().unwrap();
+
+        let e = cel_parser::parse("this").unwrap().to_sqcel(&tp).unwrap();
+
+        println!("{}", reg.get("or", Some(&e), &[]).unwrap_err());
+    }
+}

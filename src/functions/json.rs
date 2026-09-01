@@ -4,63 +4,47 @@ use sea_query::{
 
 use crate::{
     Error, Result, Transpiler,
-    functions::Function,
-    intermediate::{Expression, Rc, ToSql},
+    functions::{Function, FunctionArgs, FunctionPattern},
+    intermediate::{Rc, ToSql},
     sql_extensions::{IntoSqlExpression, SqlExtension},
     transpiler::alias::DynTableAlias,
-    types::{Cell, JsonObject, JsonType, Type, TypedExpression},
+    types::{Cell, JsonObject, Type, TypedExpression},
 };
 
-pub struct CollectJson(pub Expression);
+use super::FunctionOrigin;
 
-impl Function for CollectJson {}
-
-impl ToSql for CollectJson {
-    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
-        let var = tp.alias_key_value();
-        Ok(collect_simple_object(var.key_ref(), var.value_ref())
-            .from(self.0.clone().try_iterate(tp, var.into_iden())?)
-            .take()
-            .into_expr()
-            .with_type(self.returntype(tp)))
-    }
-
-    fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
-        Type::Column(None, JsonType::Any.into())
-    }
+pub fn collect_object() -> Function {
+    Function::define_with_origin(
+        FunctionPattern {
+            name: "collect_object".to_owned(),
+            receiver: Some(Type::View(None).into()),
+            args: vec![],
+            variadic: None,
+            returns: Type::Cell(Cell::Value(JsonObject::AnyContent.into())).into(),
+        },
+        "Collect a multidimensional data view into a single json value",
+        to_sql,
+        FunctionOrigin::Sqcel,
+    )
 }
 
-fn collect_simple_object(key: ColumnRef, value: ColumnRef) -> SelectStatement {
-    Query::select()
-        .expr(Func::cust("jsonb_object_agg").arg(key).arg(value))
-        .take()
-}
-
-pub struct CollectJsonRecursive(pub Expression);
-
-impl Function for CollectJsonRecursive {}
-
-impl ToSql for CollectJsonRecursive {
-    fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
-        let var = tp.alias();
-        Ok(match self.0.returntype(tp) {
-            Type::NamedView(index_map) => collect_object_recursive(
-                &index_map
-                    .keys()
-                    .map(|x| Alias::new(x).into_iden())
-                    .collect::<Vec<_>>(),
-                0,
-                self.0.try_iterate(tp, var.into_iden())?.into_table_ref(),
-            )?,
-            _ => return Err(Error::Todo("Can not reduce this type")),
-        }
+fn to_sql(tp: &Transpiler, args: &FunctionArgs) -> Result<TypedExpression> {
+    let select_statement = match args.receiver()?.returntype(tp) {
+        Type::NamedView(index_map) => collect_object_recursive(
+            &index_map
+                .keys()
+                .map(|x| Alias::new(x).into_iden())
+                .collect::<Vec<_>>(),
+            0,
+            args.receiver()?
+                .try_iterate(tp, tp.alias().into_iden())?
+                .into_table_ref(),
+        )?,
+        x => return Err(Error::CanNotReduceType(x)),
+    };
+    Ok(select_statement
         .into_expr()
-        .with_type(self.returntype(tp)))
-    }
-
-    fn returntype(&self, _tp: &crate::Transpiler) -> crate::types::Type {
-        Type::Cell(Cell::Value(JsonObject::AnyContent.into()))
-    }
+        .with_type(Cell::Value(JsonObject::AnyContent.into())))
 }
 
 fn collect_object_recursive(
@@ -68,22 +52,22 @@ fn collect_object_recursive(
     offset: usize,
     source: TableRef,
 ) -> Result<SelectStatement> {
+    let expr = Func::cust("jsonb_object_agg")
+        .arg(ColumnRef::Column(cols[offset].clone()))
+        .arg(ColumnRef::Column(cols[offset + 1].clone()));
+    let tbl_ref = if offset == cols.len() - 2 {
+        source.alias(DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden())
+    } else {
+        TableRef::SubQuery(
+            collect_object_recursive(cols, offset + 1, source)?,
+            DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden(),
+        )
+    };
     Ok(Query::select()
         .exprs(cols[..offset].iter().map(|x| ColumnRef::Column(x.clone())))
-        .expr(
-            Func::cust("jsonb_object_agg")
-                .arg(ColumnRef::Column(cols[offset].clone()))
-                .arg(ColumnRef::Column(cols[offset + 1].clone())),
-        )
+        .expr(expr)
         .group_by_columns(cols[..offset].iter().map(|x| ColumnRef::Column(x.clone())))
-        .from(if offset == cols.len() - 2 {
-            source.alias(DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden())
-        } else {
-            TableRef::SubQuery(
-                collect_object_recursive(cols, offset + 1, source)?,
-                DynTableAlias(Rc::new((0, cols[..offset + 2].to_vec()))).into_iden(),
-            )
-        })
+        .from(tbl_ref)
         .take())
 }
 
@@ -139,7 +123,7 @@ mod test {
             r#"
                 SELECT jsonb_object_agg("c_0", "count")
                 FROM
-                    (SELECT "x"."number" AS "c_0", COUNT("x") FROM "foo" AS "x" GROUP BY "x"."number")
+                    (SELECT "x"."number" AS "c_0", COUNT("x".*) FROM "foo" AS "x" GROUP BY "x"."number")
                 AS "t_0"("c_0","count")
                 
             "#
@@ -155,7 +139,7 @@ mod test {
                 FROM (
                     SELECT "c_0", jsonb_object_agg("c_1", "count")
                     FROM (
-                        SELECT "x"."number" AS "c_0", "x"."liste" AS "c_1", COUNT("x") 
+                        SELECT "x"."number" AS "c_0", "x"."liste" AS "c_1", COUNT("x".*) 
                         FROM "foo" AS "x" GROUP BY "x"."number", "x"."liste"
                      ) AS "t_0"("c_0","c_1","count")
                     GROUP BY "c_0"

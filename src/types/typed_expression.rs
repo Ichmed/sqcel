@@ -5,6 +5,7 @@ use sea_query::{
 
 use crate::{
     Error, Transpiler,
+    intermediate::Rc,
     sql_extensions::SqlExtension,
     types::{Cell, ColumnType, ConversionError, JsonObject, JsonType, Type, subquery_as},
 };
@@ -219,7 +220,7 @@ impl TypedExpression {
                 Cell::Value(ColumnType::Json(JsonType::Any | JsonType::List(_), _)),
             ) => Func::cust("to_jsonb")
                 .arg(self.expr)
-                .with_type(JsonType::List(Box::new(JsonType::Any))),
+                .with_type(JsonType::List(Rc::new(JsonType::Any))),
             (
                 Type::Column(_, _),
                 Cell::Value(ColumnType::Json(JsonType::Any | JsonType::Map(_), _)),

@@ -273,7 +273,7 @@ mod test {
                         ("number", ColumnType::Integer),
                         (
                             "liste",
-                            ColumnType::Json(JsonType::List(Box::new(JsonType::Any)), false),
+                            ColumnType::Json(JsonType::List(Rc::new(JsonType::Any)), false),
                         ),
                     ],
                 )],

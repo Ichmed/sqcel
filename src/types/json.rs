@@ -1,6 +1,9 @@
 use std::num::NonZero;
 
-use crate::types::{Cell, ColumnType, Type};
+use crate::{
+    intermediate::Rc,
+    types::{Cell, ColumnType, Type},
+};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Default)]
 pub enum JsonType {

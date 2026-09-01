@@ -79,6 +79,7 @@ mod test {
     use crate::{
         Result, Transpiler,
         hacks::get_plaintext_expression,
+        intermediate::Rc,
         types::{ColumnType, JsonType},
     };
 
@@ -90,7 +91,7 @@ mod test {
                     "foo",
                     vec![
                         ("number", ColumnType::Integer),
-                        ("liste", JsonType::List(Box::new(JsonType::Any)).into()),
+                        ("liste", JsonType::List(Rc::new(JsonType::Any)).into()),
                     ],
                 )],
             )]

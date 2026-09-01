@@ -2,14 +2,13 @@ use crate::{
     Transpiler,
     functions::iter::{IterKind, Iterable},
     intermediate::{
-        CantBeAValue, Expression, ExpressionInner, ToSql,
+        CantBeAValue, Expression, ExpressionInner, Rc, ToSql,
         access_chain::{AccessChain, json_to_iterable},
     },
     sql_extensions::{IntoSqlExpression, SqlExtension},
     structure::{Column, Table},
     transpiler::{Error, Result},
-    types::{Cell, ColumnType, JsonObject},
-    types::{JsonType, Type, TypedExpression},
+    types::{Cell, ColumnType, JsonObject, JsonType, Type, TypedExpression},
 };
 use indexmap::IndexMap;
 use sea_query::{Alias, Func, IntoIden, Query, SelectStatement, SimpleExpr, TableRef};
@@ -123,7 +122,7 @@ impl ToSql for Variable {
         Ok(match self {
             Self::Object(o) => o.to_sql(tp)?,
             Self::List(variables) => TypedExpression {
-                ty: Cell::Value(JsonType::List(Box::new(JsonType::Any)).into()).into(),
+                ty: Cell::Value(JsonType::List(Rc::new(JsonType::Any)).into()).into(),
                 expr: SimpleExpr::FunctionCall(
                     Func::cust(Alias::new("jsonb_build_array")).args(
                         variables
@@ -160,9 +159,9 @@ impl ToSql for Variable {
                     .reduce(|a, b| if a == b { a } else { None })
                     && let Cell::Literal(ColumnType::Json(j, _)) = c
                 {
-                    Cell::Value(JsonType::List(Box::new(j)).into()).into()
+                    Cell::Value(JsonType::List(Rc::new(j)).into()).into()
                 } else {
-                    Cell::Value(JsonType::List(Box::new(JsonType::Any)).into()).into()
+                    Cell::Value(JsonType::List(Rc::new(JsonType::Any)).into()).into()
                 }
             }
             Self::Atom(atom) => atom.returntype(tp),

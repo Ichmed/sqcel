@@ -159,7 +159,7 @@ impl ColumnType {
             Self::Json(_, _) => JsonType::Any,
             Self::Null => JsonType::Null,
             Self::Array(x) => JsonType::List(Rc::new(x.to_json_type()?)),
-            _ => return Err(Error::Todo("Not a json compatible type")),
+            _ => return Err(Error::NotJsonCompatible),
         })
     }
 

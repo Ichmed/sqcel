@@ -136,7 +136,7 @@ impl Type {
         match self {
             Self::Column(_, _) | Self::Unknown => Ok(self),
             Self::Cell(Cell::Literal(t) | Cell::Value(t)) => Ok(Self::Column(None, t)),
-            _ => Err(Error::Todo("More than one Column")),
+            _ => Err(Error::MoreThanOneColumn),
         }
     }
 }

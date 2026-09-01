@@ -267,6 +267,6 @@ impl TypedExpression {
             },
             _ => None,
         }
-        .ok_or_else(|| Error::Todo("Not a Select Statement"))
+        .ok_or_else(|| Error::NotASelectStatement)
     }
 }

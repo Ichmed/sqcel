@@ -1,5 +1,6 @@
 use std::{borrow::Cow, iter::once};
 
+use itertools::Itertools;
 use sea_query::{
     ColumnRef, DynIden, Func, IntoIden, SimpleExpr, TableRef, extension::postgres::PgExpr,
 };
@@ -238,7 +239,7 @@ impl AccessChain {
                 ty: Cell::Value(JsonType::Any.into()).into(),
                 expr: a.expr.get_json_field(b.expr),
             })
-            .ok_or(Error::Todo("tried to create empty access chain"))?;
+            .ok_or(Error::Internal("tried to create empty access chain"))?;
 
         Ok(match tail {
             Some(tail) => TypedExpression {
@@ -249,16 +250,20 @@ impl AccessChain {
         })
     }
 
-    pub const fn as_single_ident(&self) -> Result<&Ident> {
+    pub fn as_single_ident(&self) -> Result<&Ident> {
         match (self.head.as_ref(), self.idents.as_slice()) {
             (None, [single]) => Ok(single),
-            _ => Err(Error::Todo("Invalid var name")),
+            (None, x) => Err(Error::NotAnIdent(x.iter().map(|x| x.to_string()).join(","))),
+            (Some(_), _) => Err(Error::NotAnIdent("a complex expression".to_string())),
         }
     }
 
     pub fn to_table_access(&self, tp: &Transpiler) -> Result<TableRef> {
-        tp.layout
-            .table(&self.idents)
-            .ok_or(Error::Todo("Unknown table"))
+        tp.layout.table(&self.idents).ok_or(Error::TableNotFound(
+            self.idents
+                .last()
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
+        ))
     }
 }

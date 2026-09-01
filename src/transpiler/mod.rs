@@ -365,6 +365,10 @@ pub enum Error {
     CelResolveError(#[from] ExecutionError),
     #[error("A non ident function name was supplied")]
     NonIdentFunctionName,
+    #[error("Not a single ident but {}", .0)]
+    NotAnIdent(String),
+    #[error("Not a path")]
+    NotAPath,
     #[error(
         "Transpiler bug: Tried to convert Members::Fields directly (should be caught in a previous stage)"
     )]
@@ -377,6 +381,8 @@ pub enum Error {
     UnknownField(String, String),
     #[error("Message of type `{}` is missing the fields: {:?}", .0, .1)]
     MissingFields(String, Vec<String>),
+    #[error("Does not support member access")]
+    DoesNotSupportMemeberAccess,
 
     #[error(transparent)]
     Builder(#[from] TranspilerBuilderError),
@@ -387,6 +393,8 @@ pub enum Error {
     ConversionError(Box<ConversionError>),
     #[error(transparent)]
     IntConversion(#[from] std::num::TryFromIntError),
+    #[error("Expected a {} literal, found something else", .0)]
+    WrongLiteral(String),
 
     #[error("Schema \"{}\" could not be found in the layout", .0)]
     SchemaNotFound(String),
@@ -402,9 +410,10 @@ pub enum Error {
 
     #[error("Can not index type {:?}", .0)]
     CanNotIndexType(Type),
-
     #[error("Can not iterate type {:?}", .0)]
     CanNotIterateType(Type),
+    #[error("More than one column")]
+    MoreThanOneColumn,
 
     #[error("Not a SELECT statement")]
     NotASelectStatement,
@@ -426,8 +435,13 @@ pub enum Error {
 
     #[error("Cen not reduce type {:?}", .0)]
     CanNotReduceType(Type),
-    #[error("TODO: {}", .0)]
-    Todo(&'static str),
+
+    #[error("Internal transpiler error {}", .0)]
+    Internal(&'static str),
+    #[error("Not a json compatible type")]
+    NotJsonCompatible,
+    // #[error("TODO: {}", .0)]
+    // Todo(&'static str),
 }
 
 impl From<ConversionError> for Error {

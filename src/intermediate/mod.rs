@@ -18,8 +18,7 @@ use crate::{
 use cel_interpreter::{Value as CelValue, objects::Key};
 use cel_parser::{ArithmeticOp, RelationOp, UnaryOp};
 use sea_query::{
-    BinOper, CaseStatement, ExprTrait, IntoIden, SimpleExpr, Value,
-    extension::postgres::PgExpr,
+    BinOper, CaseStatement, ExprTrait, IntoIden, SimpleExpr, Value, extension::postgres::PgExpr,
 };
 use std::fmt::{Debug, Display};
 pub use to_sql::ToSql;
@@ -278,12 +277,12 @@ impl ToSql for Expression {
                         ExpressionInner::Variable(Variable::Atom(a)) => match a {
                             Atom::Int(i) => Value::BigInt(Some(-i)),
                             Atom::UInt(u) => Value::BigInt(Some(
-                                -((*u).try_into().or(Err(Error::Todo("UInt too large")))?),
+                                -((*u).try_into().or(Err(Error::Internal("UInt too large")))?),
                             )),
                             Atom::Float(f) => Value::Double(Some(-f)),
-                            _ => return Err(Error::Todo("Can't be negative")),
+                            _ => return Err(Error::Internal("Can't be negative")),
                         },
-                        _ => return Err(Error::Todo("Can't be negative")),
+                        _ => return Err(Error::Internal("Can't be negative")),
                     }),
                     UnaryOp::DoubleNot | UnaryOp::DoubleMinus => expresion.to_sql(tp)?.expr,
                 },
@@ -343,7 +342,9 @@ fn adjust_bin_oper(
         RelationOp::Equals => BinOper::Equal,
         RelationOp::NotEquals => BinOper::NotEqual,
         RelationOp::In => {
-            return Err(Error::Todo("IN operator for lists, subqueries etc"));
+            return Err(Error::Internal(
+                "Not implemented: IN operator for lists, subqueries etc",
+            ));
         }
     };
 
@@ -408,14 +409,14 @@ impl Expression {
     pub fn as_single_ident(&self) -> Result<&Ident> {
         match &*self.inner {
             ExpressionInner::Access(a) => a.as_single_ident(),
-            _ => Err(Error::Todo("Not an ident")),
+            _ => Err(Error::NotAnIdent("Expression".to_string())),
         }
     }
 
     pub fn as_str(&self) -> Result<&str> {
         match &*self.inner {
             ExpressionInner::Variable(Variable::Atom(Atom::String(s))) => Ok(s),
-            _ => Err(Error::Todo("Not a str")),
+            _ => Err(Error::WrongLiteral("string".to_string())),
         }
     }
 

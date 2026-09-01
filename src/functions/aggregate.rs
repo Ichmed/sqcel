@@ -54,7 +54,7 @@ fn return_type_inner(aggs: &[TypedExpression], reducer: Reducer) -> Result<Type>
             .enumerate()
             .map(|(i, x)| {
                 let name = format!("c_{i}");
-                Ok((name, x.ty.col_type().ok_or(Error::Todo(""))?.clone()))
+                Ok((name, x.ty.col_type().cloned().unwrap_or_default()))
             })
             .chain([Ok((
                 reducer.as_ref().to_lowercase(),

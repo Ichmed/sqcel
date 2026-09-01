@@ -53,7 +53,7 @@ impl Object {
                 None => return Err(Error::UnknownType(schema.into_owned())),
             }
         } else {
-            return Err(Error::Todo("Invalid type"));
+            return Err(Error::NotAPath);
         };
 
         let mut fields: IndexMap<String, bool> = type_info
@@ -202,7 +202,7 @@ impl Variable {
     pub fn as_postive_integer(&self) -> Result<u64> {
         match self {
             Self::Atom(atom) => atom.as_positive_integer(),
-            _ => Err(Error::Todo("Must be an integer")),
+            _ => Err(Error::WrongLiteral("integer".to_owned())),
         }
     }
 
@@ -235,9 +235,11 @@ pub enum Atom {
 impl Atom {
     fn as_positive_integer(&self) -> Result<u64> {
         match self {
-            Self::Int(i) => (*i).try_into().map_err(|_| Error::Todo("Must be positive")),
+            Self::Int(i) => (*i)
+                .try_into()
+                .map_err(|_| Error::WrongLiteral("positive integer".to_owned())),
             Self::UInt(u) => Ok(*u),
-            _ => Err(Error::Todo("Must be an integer")),
+            _ => Err(Error::WrongLiteral("integer".to_owned())),
         }
     }
 }

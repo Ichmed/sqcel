@@ -125,7 +125,7 @@ fn resolve_member(
                         head: Some(Box::new(x)),
                         idents: vec![Ident(s.clone())],
                     }),
-                    _ => return Err(Error::Todo("Does not support member access")),
+                    v => return Err(Error::DoesNotSupportMemeberAccess),
                 },
                 _ => ExpressionInner::Access(AccessChain {
                     head: Some(Box::new(x)),
@@ -178,7 +178,7 @@ impl ToIntermediate for CelValue {
             Self::Bool(b) => Variable::Atom(Atom::Bool(*b)),
             Self::Null => Variable::Atom(Atom::Null),
             Self::Function(_, _) => {
-                return Err(Error::Todo("Function pointers are not supported"));
+                return Err(Error::Internal("Function pointers are not supported"));
             }
         })
         .into_anonymous())

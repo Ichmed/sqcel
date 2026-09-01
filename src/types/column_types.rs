@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{fmt::Debug, str::FromStr};
 
 use sea_query::{Alias, DynIden, IntoIden, PgInterval, SeaRc, StringLen};
 
@@ -54,6 +54,22 @@ pub enum ColumnType {
     Null,
     #[default]
     Inferred,
+}
+
+impl ColumnType {
+    pub(crate) fn fmt_arg(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            x if x.is_string() => f.write_str("string"),
+            x if x.is_signed_integer() => f.write_str("string"),
+            Self::Boolean => f.write_str("bool"),
+            Self::Json(_, _) => f.write_str("dyn"),
+            Self::Array(x) => {
+                x.fmt_arg(f)?;
+                f.write_str("[]")
+            }
+            _ => return Debug::fmt(&self, f),
+        }
+    }
 }
 
 macro_rules! cast_list {
@@ -154,6 +170,8 @@ impl ColumnType {
 
         Double -> Float;
         Float -> Double;
+
+        Text -> TimestampWithTimeZone;
     );
 
     /// Wraps self in a `Cell::Value`

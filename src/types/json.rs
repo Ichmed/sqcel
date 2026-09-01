@@ -1,4 +1,4 @@
-use std::num::NonZero;
+use std::{fmt::Display, num::NonZero};
 
 use crate::{
     intermediate::Rc,
@@ -9,13 +9,28 @@ use crate::{
 pub enum JsonType {
     #[default]
     Any,
-    List(Box<Self>),
+    List(Rc<Self>),
     Map(JsonObject),
     Number,
     Boolean,
     String,
     Null,
 }
+
+impl Display for JsonType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            JsonType::Any => "dyn",
+            JsonType::List(_) => "array",
+            JsonType::Map(_) => "object",
+            JsonType::Number => "number",
+            JsonType::Boolean => "bool",
+            JsonType::String => "string",
+            JsonType::Null => "null",
+        })
+    }
+}
+
 impl JsonType {
     #[must_use]
     pub const fn can_cast_to(&self, other: &ColumnType) -> bool {
@@ -75,7 +90,7 @@ pub enum JsonObject {
         fields: Vec<(Option<String>, Self)>,
     },
     /// All fields are known and have static names
-    OnlyLiteralFields {
+    Proto {
         /// A proto message that this object conforms to
         ///
         /// This means all required fields are present in the

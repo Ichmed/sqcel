@@ -107,6 +107,13 @@ impl Type {
         })
     }
 
+    pub fn inner_type(&self) -> Option<&ColumnType> {
+        match self.col_type()? {
+            ColumnType::Array(x) => Some(x),
+            _ => None,
+        }
+    }
+
     /// the single type of this structure
     ///
     /// only returns a value for `Cell`, `Column` and `NamedColumn`

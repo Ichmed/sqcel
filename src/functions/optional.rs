@@ -12,14 +12,14 @@ use crate::{
 #[must_use]
 pub fn or() -> Function {
     Function::define_with_origin(
-        func_args!(or(self: Inferred, Inferred) -> Inferred),
+        func_args!(Inferred.or(Inferred) -> Inferred),
         indoc!(
             r#"
                 Returns its receiver it is non-null or its argument if the receiver is null
                 
                 Examples:
-                "something".startsWith("else")  // "something"
-                null.startsWith("other")        // "other"
+                "something".or("else")  // "something"
+                null.or("other")        // "other"
                 "#
         ),
         |tp, x| {

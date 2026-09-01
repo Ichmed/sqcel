@@ -4,7 +4,7 @@ use strum::EnumString;
 use crate::{
     Transpiler,
     functions::{Function, FunctionArgs, FunctionOrigin, FunctionPattern, ReturnType},
-    intermediate::ToSql,
+    intermediate::{Rc, ToSql},
     magic::{self},
     sql_extensions::{IntoSqlExpression, SqlExtension},
     transpiler::Result,
@@ -80,10 +80,13 @@ fn reduce_function(
     Function::define_with_origin(
         FunctionPattern {
             name: name.into(),
-            receiver: Some(SqlType::Inferred.into()),
+            receiver: Some(SqlType::Array(Rc::new(SqlType::Inferred)).into()),
             args: vec![],
             variadic: None,
-            returns: ReturnType::SameAsReceiverInner,
+            returns: match reducer {
+                Reducer::Count => SqlType::Unsigned.into(),
+                _ => ReturnType::SameAsReceiverInner,
+            },
         },
         description,
         move |tp, args| to_sql(tp, args, reducer),

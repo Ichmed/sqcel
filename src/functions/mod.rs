@@ -226,10 +226,10 @@ impl<T: Into<Type>> From<T> for Pattern {
 impl Display for Pattern {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Expression(t) => Debug::fmt(&(&t.col_type().cloned().unwrap_or_default()), f),
+            Self::Expression(t) => t.col_type().cloned().unwrap_or_default().fmt_arg(f),
             Self::ExpressionCast(t) => {
                 f.write_char('<')?;
-                Debug::fmt(&(&t.col_type().cloned().unwrap_or_default()), f)?;
+                t.col_type().cloned().unwrap_or_default().fmt_arg(f)?;
                 f.write_char('>')
             }
             Self::Custom {
@@ -340,11 +340,11 @@ impl Display for FunctionPattern {
         f.write_str(") -> ")?;
 
         match &self.returns {
-            ReturnType::Static(r) => Debug::fmt(&r.col_type().cloned().unwrap_or_default(), f),
+            ReturnType::Static(r) => r.col_type().cloned().unwrap_or_default().fmt_arg(f),
             ReturnType::SameAsReceiver => Debug::fmt(&self.receiver, f),
             ReturnType::SameAsReceiverInner => match &self.receiver {
                 Some(Pattern::Expression(x)) => {
-                    Debug::fmt(&x.array_type().cloned().unwrap_or_default(), f)
+                    Debug::fmt(&x.inner_type().cloned().unwrap_or_default(), f)
                 }
                 _x => f.write_str("Content of Receiver"),
             },
@@ -357,7 +357,7 @@ impl Display for FunctionPattern {
 
 #[macro_export]
 macro_rules! func_args {
-    ($ident:ident (self: $receiver:expr $(,$arg:expr)*) -> $rt:expr) => {{
+    ($receiver:ident.$ident:ident ($($arg:expr),*) -> $rt:expr) => {{
             #[allow(unused_imports)]
             use $crate::types::ColumnType::*;
             $crate::functions::FunctionPattern {
@@ -443,6 +443,7 @@ impl Default for FunctionRegistry {
         };
 
         reg.register(json::collect_object())
+            .register(cast("uint", ColumnType::Unsigned))
             .register(cast("int", ColumnType::Integer))
             .register(cast("string", ColumnType::Text))
             .register(cast("bool", ColumnType::Boolean))

@@ -1,9 +1,9 @@
 use super::{Function, FunctionOrigin};
+use crate::Result;
 use crate::functions::{FunctionArgs, FunctionPattern, Pattern, ReturnType};
 use crate::intermediate::{Expression, ToSql};
 use crate::sql_extensions::{IntoSqlExpression, SqlExtension};
 use crate::types::{ColumnType, TypedExpression};
-use crate::Result;
 use indoc::indoc;
 use sea_query::{
     IntoIden, IntoTableRef, Query, SimpleExpr, SubQueryOper, SubQueryStatement, TableRef,
@@ -252,6 +252,7 @@ mod test {
     use sea_query::PostgresQueryBuilder;
     use sea_query::{Asterisk, Query};
 
+    use crate::intermediate::Rc;
     use crate::{
         Result, Transpiler,
         hacks::get_plaintext_expression,

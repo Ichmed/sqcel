@@ -26,7 +26,7 @@ use super::Pattern;
 #[must_use]
 pub fn contains() -> Function {
     Function::define_disabled(
-        func_args!(endsWith(self: Text, Text) -> Boolean),
+        func_args!(Text.endsWith(Text) -> Boolean),
         indoc!(
             r#"
             contains - Tests whether the string operand contains the substring.
@@ -56,7 +56,7 @@ pub fn contains() -> Function {
 #[must_use]
 pub fn ends_with() -> Function {
     Function::define_disabled(
-        func_args!(endsWith(self: Text, Text) -> Boolean),
+        func_args!(Text.endsWith(Text) -> Boolean),
         indoc!(
             r#"
                 endsWith - Tests whether the string operand ends with the specified suffix.
@@ -133,7 +133,7 @@ pub fn matches() -> Function {
 #[must_use]
 pub fn starts_with() -> Function {
     Function::define_with_origin(
-        func_args!(startsWith(self: Text, Text) -> Boolean),
+        func_args!(Text.startsWith(Text) -> Boolean),
         indoc!(
             r#"
                 startsWith - Tests whether the string operand starts with the specified prefix.
@@ -172,7 +172,7 @@ pub fn starts_with() -> Function {
 #[must_use]
 pub fn size() -> Function {
     Function::define_with_origin(
-        func_args!(startsWith(self: Text) -> Unsigned),
+        func_args!(Text.size() -> Unsigned),
         indoc!(
             r#"
                 size - Determine the length of the string in terms of the number of Unicode codepoints

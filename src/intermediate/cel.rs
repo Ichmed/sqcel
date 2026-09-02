@@ -125,7 +125,7 @@ fn resolve_member(
                         head: Some(Box::new(x)),
                         idents: vec![Ident(s.clone())],
                     }),
-                    v => return Err(Error::DoesNotSupportMemeberAccess),
+                    _ => return Err(Error::DoesNotSupportMemeberAccess),
                 },
                 _ => ExpressionInner::Access(AccessChain {
                     head: Some(Box::new(x)),

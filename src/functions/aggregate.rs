@@ -1,7 +1,7 @@
 use sea_query::{Func, IntoIden, Query, SelectExpr};
 
 use crate::{
-    Error, Result, Transpiler,
+    Result, Transpiler,
     functions::{
         Function, FunctionArgs, FunctionOrigin, FunctionPattern, Pattern, ReturnType,
         reduce::Reducer,

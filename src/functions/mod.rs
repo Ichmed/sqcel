@@ -381,7 +381,7 @@ macro_rules! func_args {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FunctionRegistry {
     inner: HashMap<String, Vec<Rc<Function>>>,
 }

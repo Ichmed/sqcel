@@ -2,11 +2,7 @@ pub mod alias;
 pub mod views;
 
 use crate::{
-    // functions::{
-    //     WrongFunctionArgs,
-    //     dyn_fn::{CelFunction, DynamicFunction, Signature},
-    // },
-    functions::{self, FunctionRegistry},
+    functions::{self, Function, FunctionRegistry},
     intermediate::{Rc, ToIntermediate, ToSql, variables::Variable},
     structure::{Column, Schema, SqlLayout, Table},
     transpiler::{
@@ -52,6 +48,7 @@ pub struct Transpiler {
     pub(crate) types: IndexMap<String, protobuf::descriptor::DescriptorProto>,
 
     // pub(crate) functions: IndexMap<Signature, (Rc<dyn DynamicFunction>, Option<Type>)>,
+    #[builder(field(ty = "FunctionRegistry", build = "self.functions.clone().into()"))]
     pub(crate) functions: Rc<FunctionRegistry>,
 
     /// Whether to accept unknown types
@@ -110,7 +107,7 @@ impl Transpiler {
             accept_unknown_types: Some(*accept_unknown_types),
             trigger_mode: Some(*trigger_mode),
             reduce: Some(*reduce),
-            functions: Some(functions.clone()),
+            functions: (**functions).clone(),
             layout: Some(layout.clone()),
             alias_index: Some(alias_index.clone()),
         }
@@ -293,42 +290,10 @@ impl TranspilerBuilder {
         self
     }
 
-    // #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
-    // #[allow(
-    //     clippy::unnecessary_wraps,
-    //     reason = "May become fallible in the future"
-    // )]
-    // pub fn add_dyn_func(
-    //     &mut self,
-    //     name: impl ToString,
-    //     method: bool,
-    //     args: impl IntoIterator<Item = impl ToString>,
-    //     code: impl Into<Expression>,
-    //     rt: Option<Type>,
-    // ) -> Result<&mut Self> {
-    //     let f = CelFunction {
-    //         code: code.into(),
-    //         name: name.to_string(),
-    //         method,
-    //         args: args.into_iter().map(|x| x.to_string()).collect(),
-    //         rt: rt.clone(),
-    //     };
-
-    //     self.functions.get_or_insert_default().insert(
-    //         Signature {
-    //             name: name.to_string(),
-    //             rec: method,
-    //             args: f.args.len(),
-    //         },
-    //         (Rc::new(f), rt),
-    //     );
-    //     Ok(self)
-    // }
-
-    // pub fn add_cel_func(&mut self, code: impl AsRef<str>) -> Result<&mut Self> {
-    //     let f = CelFunction::parse(&Default::default(), code.as_ref())?;
-    //     self.add_dyn_func(&f.name, f.method, f.args, f.code, f.rt)
-    // }
+    pub fn register_function(&mut self, f: Function) -> &mut Self {
+        self.functions.register(f);
+        self
+    }
 
     #[allow(clippy::needless_pass_by_value, reason = "To allow &str")]
     pub fn view(

@@ -76,6 +76,12 @@ impl Ident {
     }
 }
 
+impl<T: AsRef<str>> From<T> for Ident {
+    fn from(value: T) -> Self {
+        Self(Rc::new(value.as_ref().to_owned()))
+    }
+}
+
 impl IntoIden for Ident {
     fn into_iden(self) -> sea_query::DynIden {
         str_alias(self.0)

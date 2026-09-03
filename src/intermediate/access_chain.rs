@@ -210,6 +210,12 @@ pub fn json_to_iterable(
     Ok(Iterable { expr, kind })
 }
 
+impl<T: Into<Ident>> FromIterator<T> for AccessChain {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::new(iter.into_iter().map(|x| x.into()).collect())
+    }
+}
+
 impl AccessChain {
     #[must_use]
     pub const fn new(chain: Vec<Ident>) -> Self {

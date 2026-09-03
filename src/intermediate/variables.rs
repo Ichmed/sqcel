@@ -215,9 +215,9 @@ impl Variable {
     }
 }
 
-impl From<i64> for Variable {
-    fn from(value: i64) -> Self {
-        Self::Atom(Atom::from(value))
+impl<T: Into<Atom>> From<T> for Variable {
+    fn from(value: T) -> Self {
+        Self::Atom(value.into())
     }
 }
 
@@ -225,8 +225,8 @@ impl From<i64> for Variable {
 pub enum Atom {
     Null,
     Bool(bool),
-    String(Arc<String>),
-    Bytes(Arc<Vec<u8>>),
+    String(Rc<String>),
+    Bytes(Rc<Vec<u8>>),
     Int(i64),
     UInt(u64),
     Float(f64),
@@ -244,11 +244,32 @@ impl Atom {
     }
 }
 
-impl From<i64> for Atom {
-    fn from(value: i64) -> Self {
-        Self::Int(value)
-    }
+macro_rules! impl_from {
+    ($ty:ty, $variant:ident) => {
+        impl From<$ty> for Atom {
+            fn from(value: $ty) -> Self {
+                Self::$variant(value.to_owned().into())
+            }
+        }
+
+        impl From<Option<$ty>> for Atom {
+            fn from(value: Option<$ty>) -> Self {
+                match value {
+                    Some(value) => Self::$variant(value.to_owned().into()),
+                    None => Self::Null,
+                }
+            }
+        }
+    };
 }
+
+impl_from!(u64, UInt);
+impl_from!(i64, Int);
+impl_from!(f64, Float);
+impl_from!(bool, Bool);
+impl_from!(&str, String);
+impl_from!(String, String);
+impl_from!(Vec<u8>, Bytes);
 
 impl TryFrom<Variable> for cel_interpreter::Value {
     type Error = CantBeAValue;

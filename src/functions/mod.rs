@@ -284,11 +284,11 @@ impl<T: Into<Type>> From<T> for ReturnType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionPattern {
-    name: String,
-    receiver: Option<Pattern>,
-    args: Vec<Pattern>,
-    variadic: Option<Pattern>,
-    returns: ReturnType,
+    pub name: String,
+    pub receiver: Option<Pattern>,
+    pub args: Vec<Pattern>,
+    pub variadic: Option<Pattern>,
+    pub returns: ReturnType,
 }
 
 impl FunctionPattern {

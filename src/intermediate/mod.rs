@@ -7,7 +7,7 @@ use crate::{
     Error, Result, Transpiler,
     functions::{FunctionBundle, iter::Iterable},
     intermediate::{
-        access_chain::AccessChain,
+        access_chain::{AccessChain, json_to_iterable},
         to_sql::try_iterate_fallback,
         variables::{Atom, Object, Variable},
     },
@@ -325,6 +325,14 @@ impl ToSql for Expression {
         let var = var.into_iden();
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.try_iterate(tp, var),
+            ExpressionInner::FunctionCall(f) => json_to_iterable(
+                tp,
+                var,
+                f.to_sql(tp)?,
+                None,
+                f.returntype(tp).col_type().unwrap().clone(),
+            ),
+            // ExpressionInner::Index(_, _) => todo!("iiindex"),
             ExpressionInner::Variable(variable) => variable.try_iterate(tp, var),
 
             _ => try_iterate_fallback(self, tp, &var),

@@ -6,7 +6,8 @@ use crate::sql_extensions::{IntoSqlExpression, SqlExtension};
 use crate::types::{ColumnType, TypedExpression};
 use indoc::indoc;
 use sea_query::{
-    IntoIden, IntoTableRef, Query, SimpleExpr, SubQueryOper, SubQueryStatement, TableRef,
+    Func, IntoColumnRef, IntoIden, IntoTableRef, Query, SimpleExpr, SubQueryOper,
+    SubQueryStatement, TableRef,
 };
 
 use crate::{
@@ -247,6 +248,41 @@ fn to_sql(tp: &Transpiler, args: &FunctionArgs, oper: SubQueryOper) -> Result<Ty
     Ok(compare.eq(stream).with_type(ColumnType::Boolean))
 }
 
+#[must_use]
+pub fn join() -> Function {
+    Function::define_with_origin(
+        FunctionPattern {
+            name: "join".into(),
+            receiver: Some(ColumnType::Array(ColumnType::Text.into()).into()),
+            args: vec![ColumnType::Text.into()],
+            variadic: None,
+            returns: ColumnType::Text.into(),
+        },
+        r"combines a list of strings by interspersing them witht he supplied separator",
+        |tp, args| {
+            let alias = tp.alias();
+            let source = args.receiver()?.try_iterate(tp, alias)?.into_table_ref();
+            let arg: SimpleExpr = alias.into_column_ref().into();
+            let iter_var = arg
+                .with_type(
+                    args.receiver()?
+                        .returntype(tp)
+                        .iter_type()
+                        .unwrap_or_default(),
+                )
+                .convert(tp, &ColumnType::Text)?;
+            let separator = args.arg(0)?.to_sql(tp)?;
+            Ok(Query::select()
+                .expr(Func::cust("string_agg").arg(iter_var).arg(separator))
+                .from(source)
+                .take()
+                .into_expr()
+                .with_type(ColumnType::Text))
+        },
+        FunctionOrigin::Sqcel,
+    )
+}
+
 #[cfg(test)]
 mod test {
     use sea_query::PostgresQueryBuilder;
@@ -427,5 +463,13 @@ mod test {
         assert_eq!(postgres("[true, true].exists(x, x)").unwrap(), "TRUE");
         assert_eq!(postgres("[true, false].exists(x, x)").unwrap(), "TRUE");
         assert_eq!(postgres("[false, false].exists(x, x)").unwrap(), "FALSE");
+    }
+
+    #[test]
+    fn join_json() {
+        assert_eq!(
+            postgres(r#"["foo", "bar"].join(",")"#).unwrap(),
+            r#"(SELECT string_agg("c_1", ',') FROM jsonb_array_elements(jsonb_build_array('foo', 'bar')) AS "t_2"("c_1"))"#
+        );
     }
 }

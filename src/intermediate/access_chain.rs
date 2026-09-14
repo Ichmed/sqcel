@@ -212,7 +212,7 @@ pub fn json_to_iterable(
 
 impl<T: Into<Ident>> FromIterator<T> for AccessChain {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::new(iter.into_iter().map(|x| x.into()).collect())
+        Self::new(iter.into_iter().map(Into::into).collect())
     }
 }
 
@@ -259,17 +259,14 @@ impl AccessChain {
     pub fn as_single_ident(&self) -> Result<&Ident> {
         match (self.head.as_ref(), self.idents.as_slice()) {
             (None, [single]) => Ok(single),
-            (None, x) => Err(Error::NotAnIdent(x.iter().map(|x| x.to_string()).join(","))),
+            (None, x) => Err(Error::NotAnIdent(x.iter().map(Ident::to_string).join(","))),
             (Some(_), _) => Err(Error::NotAnIdent("a complex expression".to_string())),
         }
     }
 
     pub fn to_table_access(&self, tp: &Transpiler) -> Result<TableRef> {
         tp.layout.table(&self.idents).ok_or(Error::TableNotFound(
-            self.idents
-                .last()
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
+            self.idents.last().map(Ident::to_string).unwrap_or_default(),
         ))
     }
 }

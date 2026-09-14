@@ -343,9 +343,7 @@ impl Display for FunctionPattern {
             ReturnType::Static(r) => r.col_type().cloned().unwrap_or_default().fmt_arg(f),
             ReturnType::SameAsReceiver => Debug::fmt(&self.receiver, f),
             ReturnType::SameAsReceiverInner => match &self.receiver {
-                Some(Pattern::Expression(x)) => {
-                    Debug::fmt(&x.inner_type().cloned().unwrap_or_default(), f)
-                }
+                Some(Pattern::Expression(x)) => Debug::fmt(&x.iter_type().unwrap_or_default(), f),
                 _x => f.write_str("Content of Receiver"),
             },
 
@@ -460,6 +458,7 @@ impl Default for FunctionRegistry {
             .register(iter::filter_map())
             .register(iter::all())
             .register(iter::exists())
+            .register(iter::join())
             .register(string::starts_with())
             .register(string::ends_with())
             .register(string::matches())

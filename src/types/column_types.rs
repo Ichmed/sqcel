@@ -67,7 +67,7 @@ impl ColumnType {
                 x.fmt_arg(f)?;
                 f.write_str("[]")
             }
-            _ => return Debug::fmt(&self, f),
+            _ => Debug::fmt(&self, f),
         }
     }
 }
@@ -150,7 +150,6 @@ impl ColumnType {
         matches!(self, Self::Text | Self::String(_) | Self::Char(_))
     }
 
-    #[must_use]
     pub fn to_json_type(&self) -> Result<JsonType> {
         Ok(match self {
             x if x.is_string() => JsonType::String,

@@ -107,9 +107,12 @@ impl Type {
         })
     }
 
-    pub fn inner_type(&self) -> Option<&ColumnType> {
+    #[must_use]
+    pub fn iter_type(&self) -> Option<ColumnType> {
         match self.col_type()? {
-            ColumnType::Array(x) => Some(x),
+            ColumnType::Array(x) => Some((**x).clone()),
+            ColumnType::Json(JsonType::List(x), _) => Some((**x).clone().into()),
+            ColumnType::Json(JsonType::Map(_), _) => Some(JsonType::String.into()),
             _ => None,
         }
     }

@@ -20,13 +20,13 @@ pub enum JsonType {
 impl Display for JsonType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            JsonType::Any => "dyn",
-            JsonType::List(_) => "array",
-            JsonType::Map(_) => "object",
-            JsonType::Number => "number",
-            JsonType::Boolean => "bool",
-            JsonType::String => "string",
-            JsonType::Null => "null",
+            Self::Any => "dyn",
+            Self::List(_) => "array",
+            Self::Map(_) => "object",
+            Self::Number => "number",
+            Self::Boolean => "bool",
+            Self::String => "string",
+            Self::Null => "null",
         })
     }
 }

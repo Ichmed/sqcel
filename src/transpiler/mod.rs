@@ -9,7 +9,7 @@ use crate::{
         alias::{IncAlias, KeyValueAlias, TableAlias},
         views::ViewSource,
     },
-    types::{ColumnType, ConversionError, Type},
+    types::{ColumnType, ConversionError, Type, TypedExpression},
 };
 use cel_interpreter::{Context, ExecutionError, Value as CelValue};
 use cel_parser::Expression as CelExpr;
@@ -75,15 +75,15 @@ impl Transpiler {
         TranspilerBuilder::create_empty()
     }
 
-    pub fn transpile(&self, src: &str) -> Result<SqlExpr> {
+    pub fn transpile(&self, src: &str) -> Result<TypedExpression> {
         self.transpile_expr(&cel_parser::parse(src)?)
     }
 
-    pub fn transpile_expr(&self, expr: &CelExpr) -> Result<SqlExpr> {
+    pub fn transpile_expr(&self, expr: &CelExpr) -> Result<TypedExpression> {
         if let Ok(mut counter) = self.alias_index.write() {
             *counter = 0;
         }
-        expr.to_sqcel(self)?.to_sql(self).map(|x| x.expr)
+        expr.to_sqcel(self)?.to_sql(self)
     }
 
     #[must_use]
@@ -484,12 +484,11 @@ mod test {
     }
 
     #[test]
-    #[should_panic]
     fn proto_unknwon_field() {
         TranspilerBuilder::create_empty()
             .types(read_proto())
             .transpile(r"M{unknown: 5}")
-            .unwrap();
+            .unwrap_err();
     }
 
     #[test]

@@ -39,9 +39,10 @@ impl ToSql for AccessChain {
             (None, [table, rest @ ..]) if let Some(r) = tp.layout.table_asterisk([table]) => {
                 let types = tp.layout.table_columns([table]).unwrap().clone();
                 (
-                    SimpleExpr::Column(r).with_type(Type::NamedView(
-                        types.into_iter().map(|c| (c.0, c.1.ty)).collect(),
-                    )),
+                    SimpleExpr::Column(r).with_type(Type::NamedView {
+                        fields: types.into_iter().map(|c| (c.0, c.1.ty)).collect(),
+                        groups: Default::default(),
+                    }),
                     rest,
                 )
             }
@@ -159,7 +160,7 @@ impl ToSql for AccessChain {
                     TableRef::SchemaTable(s, t) | TableRef::SchemaTableAlias(s, t, _) => {
                         TableRef::SchemaTableAlias(s, t, var.clone())
                     }
-                    _ => return Err(Error::CanNotIterateType(self.returntype(tp))),
+                    _ => return Err(Error::CanNotIterateType(Box::new(self.returntype(tp)))),
                 },
                 kind: IterKind::Table(
                     Table::new(var.to_string()).columns(
@@ -184,9 +185,9 @@ impl ToSql for AccessChain {
                 v.try_iterate(tp, var)?
             }
             x => {
-                return Err(Error::CanNotIterateType(
+                return Err(Error::CanNotIterateType(Box::new(
                     x.0.as_ref().map(|x| x.returntype(tp)).unwrap_or_default(),
-                ));
+                )));
             }
         })
     }
@@ -200,7 +201,9 @@ pub fn json_to_iterable(
     ty: ColumnType,
 ) -> Result<Iterable> {
     let ColumnType::Json(ty, _) = ty else {
-        return Err(Error::CanNotIterateType(Type::Column(col_name, ty)));
+        return Err(Error::CanNotIterateType(Box::new(Type::Column(
+            col_name, ty,
+        ))));
     };
     let kind = IterKind::Column(Column::new(var.to_string(), ty));
     let expr = TableRef::FunctionCall(
@@ -259,6 +262,14 @@ impl AccessChain {
     pub fn as_single_ident(&self) -> Result<&Ident> {
         match (self.head.as_ref(), self.idents.as_slice()) {
             (None, [single]) => Ok(single),
+            (None, x) => Err(Error::NotAnIdent(x.iter().map(Ident::to_string).join(","))),
+            (Some(_), _) => Err(Error::NotAnIdent("a complex expression".to_string())),
+        }
+    }
+
+    pub fn as_field_on(&self, alias: impl IntoIden) -> Result<&Ident> {
+        match (self.head.as_ref(), self.idents.as_slice()) {
+            (None, [a, field]) if a.into_iden() == alias.into_iden() => Ok(field),
             (None, x) => Err(Error::NotAnIdent(x.iter().map(Ident::to_string).join(","))),
             (Some(_), _) => Err(Error::NotAnIdent("a complex expression".to_string())),
         }

@@ -325,7 +325,7 @@ bug_cel!(
 //     r#"{"1": 1, "2": 1}.map(x, string(x))"#
 // );
 
-bug_sql!(
+good!(
     map_object_to_static
     r#"{"1": 1, "2": 1}.map(x, "haha")"#
 );

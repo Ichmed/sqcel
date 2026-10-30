@@ -9,7 +9,6 @@ use crate::{
     types::agree::unify,
 };
 
-#[must_use]
 pub fn or() -> Function {
     Function::define_with_origin(
         func_args!(Inferred.or(Inferred) -> Inferred),

@@ -68,6 +68,7 @@ impl ToIntermediate for CelExpression {
                     .collect::<Result<Vec<_>>>()?;
                 ExpressionInner::FunctionCall(FunctionBundle {
                     function: tp.functions.get(
+                        tp,
                         name.to_sqcel(tp)?.as_single_ident()?.as_str(),
                         rec1.as_ref(),
                         args1,

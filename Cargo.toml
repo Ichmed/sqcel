@@ -33,7 +33,8 @@ strum = { version = "0.28.0", features = ["derive"] }
 default = ["serde_json", "cli", "thread-safe", "fuzzing"]
 serde_json = ["dep:serde_json"]
 cli = ["dep:clap", "miette/fancy"]
-fuzzing = []
+fuzzing = ["db-available"]
+db-available = []
 thread-safe = ["sea-query/thread-safe"]
 
 [dev-dependencies]

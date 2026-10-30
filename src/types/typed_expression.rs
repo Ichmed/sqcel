@@ -5,8 +5,9 @@ use sea_query::{
 
 use crate::{
     Error, Transpiler,
-    intermediate::Rc,
-    sql_extensions::SqlExtension,
+    intermediate::{Rc, ToSql},
+    magic,
+    sql_extensions::{IntoSqlExpression, SqlExtension},
     types::{Cell, ColumnType, ConversionError, JsonObject, JsonType, Type, subquery_as},
 };
 
@@ -14,6 +15,16 @@ use crate::{
 pub struct TypedExpression {
     pub expr: SimpleExpr,
     pub ty: Type,
+}
+
+impl ToSql for TypedExpression {
+    fn to_sql(&self, _: &Transpiler) -> crate::Result<TypedExpression> {
+        Ok(self.clone())
+    }
+
+    fn returntype(&self, _: &Transpiler) -> Type {
+        self.ty.clone()
+    }
 }
 
 impl From<TypedExpression> for SimpleExpr {
@@ -45,6 +56,7 @@ impl TypedExpression {
     }
 
     // Reinterprete the shape
+    #[allow(clippy::too_many_lines)]
     pub fn reshape(self, tp: &Transpiler, other: &Type) -> Result<Self, ConversionError> {
         #[allow(clippy::match_same_arms)]
         Ok(match (self.ty.clone(), other) {
@@ -73,11 +85,40 @@ impl TypedExpression {
                     ));
                 }
             }
+            (
+                Type::Column(_, ColumnType::Json(t, _)),
+                Type::Cell(Cell::Value(ColumnType::Json(JsonType::Any | JsonType::List(_), _))),
+            ) => Query::select()
+                .expr(Func::cust("to_jsonb").arg(Func::cust("array").arg(self.to_sql(tp)?)))
+                .take()
+                .into_expr()
+                .with_type(JsonType::List(t.into())),
             (a @ Type::Column(_, _), b) => {
                 return Err(ConversionError::CantConvert(
                     Box::new(a),
                     Box::new(b.clone()),
                 ));
+            }
+            (
+                Type::NamedView { fields, .. },
+                Type::Cell(Cell::Value(ColumnType::Json(JsonType::Any | JsonType::List(_), _))),
+            ) => {
+                let x = self.try_iterate(tp, magic::x().as_single_ident()?)?;
+                let rows = Query::select()
+                    .expr(Func::cust("to_jsonb").arg(SimpleExpr::Custom("x".into())))
+                    .from_as(x, magic::x().as_single_ident()?)
+                    .take();
+                let map_type = JsonType::Map(JsonObject::FullyKnownFields {
+                    fields: fields
+                        .into_iter()
+                        .map(|(k, v)| Ok((Some(k), v.to_json_type()?)))
+                        .collect::<Result<_, Error>>()?,
+                });
+                Query::select()
+                    .expr(Func::cust("to_jsonb").arg(Func::cust("array").arg(rows.into_expr())))
+                    .take()
+                    .into_expr()
+                    .with_type(JsonType::List(map_type.into()))
             }
 
             (Type::Cell(_), Type::Cell(Cell::Value(b) | Cell::Literal(b))) => {
@@ -122,6 +163,30 @@ impl TypedExpression {
     }
 
     // Change the Column Type but retain the shape
+    pub fn force_cast(self, _tp: &Transpiler, other: &ColumnType) -> Result<Self, ConversionError> {
+        let mt = self
+            .ty
+            .col_type()
+            .ok_or_else(|| ConversionError::CantReduce(Box::new(self.ty.clone()), other.clone()))?;
+        if mt == other || (mt.is_json() && other.is_json()) {
+            return Ok(self);
+        }
+
+        Ok(Self {
+            ty: match &self.ty {
+                Type::Column(name, _) => Type::Column(name.clone(), other.clone()),
+                Type::Cell(_) => Type::Cell(Cell::Value(other.clone())),
+                _ => {
+                    return Err(ConversionError::CantReduce(
+                        Box::new(self.ty),
+                        other.clone(),
+                    ));
+                }
+            },
+            expr: self.into_json_cast().expr.cast_as(other.clone()),
+        })
+    }
+
     pub fn convert(self, tp: &Transpiler, other: &ColumnType) -> Result<Self, ConversionError> {
         Ok(if let Some(col_type) = self.ty.col_type() {
             if col_type.can_cast_to(other) {
@@ -163,6 +228,10 @@ impl TypedExpression {
                         .extract("epoch")
                         .cast_as(a.clone())
                         .with_type(a.clone()),
+
+                    (a, t) if t.is_time_like() && a.is_integer() => {
+                        Func::cust("to_timestamp").arg(self).with_type(t.clone())
+                    }
 
                     (_, other @ ColumnType::Json(JsonType::Any, _)) => Func::cust("to_jsonb")
                         .arg(self.expr)
@@ -213,7 +282,7 @@ impl TypedExpression {
 
     // Force the Expression into a single Cell
     pub fn reduce(self, tp: &Transpiler, other: &Cell) -> Result<Self, ConversionError> {
-        Ok(match (&self.ty, other) {
+        Ok(match dbg!((&self.ty, other)) {
             (Type::Cell(_), Cell::Value(ty)) => self.convert(tp, ty)?,
             (
                 Type::Row(_) | Type::NamedRow(_),
@@ -228,7 +297,7 @@ impl TypedExpression {
                 .arg(Func::cust("array").arg(self.expr))
                 .with_type(JsonType::Map(JsonObject::AnyContent)),
             (
-                Type::View(_) | Type::NamedView(_),
+                Type::View(_) | Type::NamedView { .. },
                 Cell::Value(ColumnType::Json(JsonType::Any | JsonType::Map(_), _)),
             ) => {
                 let a = tp.alias();

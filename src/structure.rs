@@ -6,7 +6,6 @@ use crate::{
 };
 use sea_query::{ColumnRef, TableRef};
 
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SqlLayout {
     pub(crate) database: Database,
@@ -23,7 +22,7 @@ impl SqlLayout {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn add_temp_column_to_table(mut self, col: Column) -> Self {
         self.table
             .get_or_insert_default()
@@ -32,7 +31,7 @@ impl SqlLayout {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn add_temp_table_to_schema(mut self, tab: Table) -> Self {
         self.schema
             .get_or_insert_default()
@@ -41,7 +40,7 @@ impl SqlLayout {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn add_temp_schema_to_database(mut self, schema: Schema) -> Self {
         self.database = self.database.schema(schema);
         self

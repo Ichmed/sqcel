@@ -60,9 +60,19 @@ impl ColumnType {
     pub(crate) fn fmt_arg(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             x if x.is_string() => f.write_str("string"),
-            x if x.is_signed_integer() => f.write_str("string"),
+            x if x.is_unsigned_integer() => f.write_str("uint"),
+            x if x.is_integer() => f.write_str("int"),
+            x if x.is_float() => f.write_str("double"),
             Self::Boolean => f.write_str("bool"),
-            Self::Json(_, _) => f.write_str("dyn"),
+            Self::Json(jt, _) => match jt {
+                JsonType::Any => f.write_str("dyn"),
+                JsonType::List(_) => f.write_str("[]"),
+                JsonType::Map(_) => f.write_str("{}"),
+                JsonType::Number => f.write_str("number"),
+                JsonType::Boolean => f.write_str("bool"),
+                JsonType::String => f.write_str("string"),
+                JsonType::Null => f.write_str("null"),
+            },
             Self::Array(x) => {
                 x.fmt_arg(f)?;
                 f.write_str("[]")
@@ -95,6 +105,7 @@ impl ColumnType {
     pub fn can_cast_to(&self, other: &Self) -> bool {
         #[allow(clippy::match_same_arms)]
         match (self, other) {
+            (Self::Inferred, _) => true,
             (_, Self::Inferred) => false,
             (_, Self::Null) => false,
             (a, b) if a == b => true,
@@ -103,6 +114,19 @@ impl ColumnType {
             (Self::Json(_, _), Self::Json(JsonType::Any, _)) => true,
             (Self::Json(json_type, _), other) => json_type.can_cast_to(other),
             (a, b) => Self::can_cast_inner(a, b),
+        }
+    }
+
+    #[must_use]
+    pub fn can_convert_to(&self, other: &Self) -> bool {
+        #[allow(clippy::match_same_arms)]
+        match (self, other) {
+            (Self::Json(json_type, _), other) => json_type.can_convert_to(other),
+            (t, Self::Json(JsonType::String | JsonType::Any, _)) if t.is_string() => true,
+            (t, Self::Json(JsonType::Number | JsonType::Any, _)) if t.is_number() => true,
+            (Self::Boolean, Self::Json(JsonType::Boolean | JsonType::Any, _)) => true,
+            (t, i) | (i, t) if t.is_time_like() || i.is_integer() => true,
+            (a, b) => Self::can_cast_to(a, b),
         }
     }
 
@@ -153,6 +177,7 @@ impl ColumnType {
     pub fn to_json_type(&self) -> Result<JsonType> {
         Ok(match self {
             x if x.is_string() => JsonType::String,
+            x if x.is_time_like() => JsonType::String,
             x if x.is_number() => JsonType::Number,
             Self::Boolean => JsonType::Boolean,
             Self::Json(_, _) => JsonType::Any,
@@ -163,14 +188,22 @@ impl ColumnType {
     }
 
     cast_list!(
-        TinyUnsigned, SmallUnsigned, Unsigned, BigUnsigned, TinyInteger, SmallInteger, Integer, BigInteger
-        ->
-        TinyUnsigned, SmallUnsigned, Unsigned, BigUnsigned, TinyInteger, SmallInteger, Integer, BigInteger;
+        TinyUnsigned, SmallUnsigned, Unsigned, BigUnsigned,
+        TinyInteger, SmallInteger, Integer, BigInteger
+          ->
+        TinyUnsigned, SmallUnsigned, Unsigned, BigUnsigned,
+        TinyInteger, SmallInteger, Integer, BigInteger,
+        Text;
 
-        Double -> Float;
-        Float -> Double;
+        Float, Double
+          ->
+        Float, Double,
+        TinyInteger, SmallInteger, Integer, BigInteger,
+        Text;
 
         Text -> TimestampWithTimeZone;
+
+        Time, Timestamp, DateTime, TimestampWithTimeZone -> Text;
     );
 
     /// Wraps self in a `Cell::Value`

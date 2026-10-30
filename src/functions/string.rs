@@ -23,7 +23,6 @@ use super::Pattern;
 /// Examples:
 /// `"hello world".contains("world") // true`
 /// `"foobar".contains("baz") // false`
-#[must_use]
 pub fn contains() -> Function {
     Function::define_disabled(
         func_args!(Text.contains(Text) -> Boolean),
@@ -53,7 +52,6 @@ pub fn contains() -> Function {
 /// Examples:
 /// `"hello world".endsWith("world") // true`
 /// `"foobar".endsWith("bar") // true`
-#[must_use]
 pub fn ends_with() -> Function {
     Function::define_disabled(
         func_args!(Text.endsWith(Text) -> Boolean),
@@ -84,7 +82,6 @@ pub fn ends_with() -> Function {
 /// Examples:
 /// `matches("foobar", "foo.*") // true`
 /// `"foobar".matches("foo.*") // true`
-#[must_use]
 pub fn matches() -> Function {
     Function::define_with_origin(
         FunctionPattern {
@@ -92,7 +89,7 @@ pub fn matches() -> Function {
             receiver: Some(Pattern::ExpressionCast(ColumnType::Text.into())),
             args: vec![Pattern::Custom {
                 display: "Regex".to_owned(),
-                accepts: |_| Ok(()),
+                accepts: |_, _| Ok(()),
             }],
             variadic: None,
             returns: ColumnType::Boolean.into(),
@@ -129,8 +126,6 @@ pub fn matches() -> Function {
 ///  Examples:
 /// "hello world".startsWith("hello") // true
 /// "foobar".startsWith("foo") // true
-///
-#[must_use]
 pub fn starts_with() -> Function {
     Function::define_with_origin(
         func_args!(Text.startsWith(Text) -> Boolean),
@@ -168,8 +163,6 @@ pub fn starts_with() -> Function {
 /// - `size("world!") // 6`
 /// - `"fiance\u0301".size() // 7`
 /// - `size(string(b'\xF0\x9F\xA4\xAA')) // 1`
-///
-#[must_use]
 pub fn size() -> Function {
     Function::define_with_origin(
         func_args!(Text.size() -> Unsigned),

@@ -6,6 +6,7 @@ pub mod functions;
 pub mod hacks;
 pub mod intermediate;
 pub mod magic;
+pub mod test;
 pub mod types;
 
 pub use intermediate::variables::{Atom, Variable};

@@ -2,7 +2,7 @@ pub mod alias;
 pub mod views;
 
 use crate::{
-    functions::{self, Function, FunctionRegistry},
+    functions::{self, ArgPosition, Function, FunctionRegistry},
     intermediate::{Rc, ToIntermediate, ToSql, variables::Variable},
     structure::{Column, Schema, SqlLayout, Table},
     transpiler::{
@@ -20,7 +20,7 @@ use miette::{Diagnostic, LabeledSpan};
 use sea_query::{
     Alias, Asterisk, ColumnRef, DynIden, IntoIden, Query, SeaRc, SimpleExpr as SqlExpr, TableRef,
 };
-use std::{iter::once, sync::RwLock};
+use std::{fmt::Debug, iter::once, sync::RwLock};
 use thiserror::Error;
 
 /// A simple example
@@ -36,6 +36,7 @@ use thiserror::Error;
 ///```
 #[derive(Clone, Debug, Default, Builder)]
 #[builder(default, build_fn(name = "_build", private))]
+#[must_use]
 pub struct Transpiler {
     /// Identifiers included in vars will become
     /// constants during conversion (instead of bind params)
@@ -123,13 +124,11 @@ impl Transpiler {
         Ok(c)
     }
 
-    #[must_use]
     pub fn enter_anonymous_schema(mut self, content: IndexMap<String, Table>) -> Self {
         self.layout.enter_anonymous_schema(content);
         self
     }
 
-    #[must_use]
     pub fn enter_anonymous_table(mut self, content: IndexMap<String, Column>) -> Self {
         self.layout.enter_anonymous_table(content);
         self
@@ -153,8 +152,8 @@ impl Transpiler {
         )))
     }
 
-    #[cfg(test)]
-    pub(crate) fn quick(data: crate::structure::LayoutTuple<'static>) -> Self {
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn quick(data: crate::structure::LayoutTuple<'static>) -> Self {
         let mut r = Self::new();
         r.layout(data.clone().into());
 
@@ -165,7 +164,12 @@ impl Transpiler {
             }
         }
 
-        r.build().unwrap()
+        r.build().unwrap_or_default()
+    }
+
+    #[must_use]
+    pub const fn layout(&self) -> &SqlLayout {
+        &self.layout
     }
 }
 
@@ -320,7 +324,7 @@ pub fn str_alias(s: impl ToString) -> DynIden {
     SeaRc::new(Alias::new(s.to_string()))
 }
 
-#[derive(Debug, Error, Diagnostic)]
+#[derive(Error, Diagnostic)]
 pub enum Error {
     #[error("A non ident column, field or schema name was supplied")]
     NonIdentColumnFieldSchema,
@@ -371,12 +375,12 @@ pub enum Error {
     ColumnNotFound(String),
 
     #[error("Function {} does not accept type {:?}", .0, .1)]
-    WrongFunctionArgType(String, Type),
+    WrongFunctionArgType(String, Box<Type>),
 
     #[error("Can not index type {:?}", .0)]
-    CanNotIndexType(Type),
+    CanNotIndexType(Box<Type>),
     #[error("Can not iterate type {:?}", .0)]
-    CanNotIterateType(Type),
+    CanNotIterateType(Box<Type>),
     #[error("More than one column")]
     MoreThanOneColumn,
 
@@ -389,8 +393,12 @@ pub enum Error {
     FunctionDisabled(String),
     #[error("Pattern does not match")]
     PatternDoesNotMatch,
+    #[error("{} should be {:?} but was {:?}", .0, .1, .2)]
+    WrongArgumentType(ArgPosition, Box<Type>, Box<Type>),
     #[error("No matching Pattern. Found the following patterns\n{}", .0.iter().map(|(p, e)| format!("  - {p} ({e})")).join("\n"))]
-    NotMatchingPattern(Vec<(Rc<functions::FunctionPattern>, Self)>),
+    NoMatchingPattern(Vec<(Rc<functions::FunctionPattern>, Self)>),
+    #[error("Multipl matching Patterns. Found the following patterns\n{}", .0.iter().map(|p| format!("  - {p}")).join("\n"))]
+    MultipleMatchingPatterns(Vec<Rc<functions::FunctionPattern>>),
     #[error("Wrong number of arguments")]
     PatternWrongArgNumber,
     #[error("Expected a free function call")]
@@ -398,15 +406,36 @@ pub enum Error {
     #[error("Expected a bound method call")]
     PatternIsAMethod,
 
-    #[error("Cen not reduce type {:?}", .0)]
-    CanNotReduceType(Type),
+    #[error("Can not reduce type {:?}", .0)]
+    CanNotReduceType(Box<Type>),
 
     #[error("Internal transpiler error {}", .0)]
     Internal(&'static str),
     #[error("Not a json compatible type")]
     NotJsonCompatible,
+    #[error("Can only use views as buckets")]
+    CanOnlyUseViewsAsBuckets,
+    #[error("Not enough columns to construct a view. Expected at least {}, got {}",.0,.1)]
+    NotEnoughColumns(usize, usize),
+
+    #[error("{}\n +{}",.0, .1)]
+    WithContext(String, Box<Self>),
     // #[error("TODO: {}", .0)]
     // Todo(&'static str),
+}
+
+impl Error {
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value, reason = "To enable passing &str")]
+    pub fn with_context(self, context: impl ToString) -> Self {
+        Self::WithContext(context.to_string(), Box::new(self))
+    }
+}
+
+impl Debug for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
 }
 
 impl From<ConversionError> for Error {
@@ -476,6 +505,7 @@ mod test {
             .collect()
     }
 
+    #[track_caller]
     fn helper(code: &str, tp: &Transpiler) -> String {
         Query::select()
             .expr(tp.transpile(code).unwrap())

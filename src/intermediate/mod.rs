@@ -7,7 +7,7 @@ use crate::{
     Error, Result, Transpiler,
     functions::{FunctionBundle, iter::Iterable},
     intermediate::{
-        access_chain::{AccessChain, json_to_iterable},
+        access_chain::AccessChain,
         to_sql::try_iterate_fallback,
         variables::{Atom, Object, Variable},
     },
@@ -325,13 +325,7 @@ impl ToSql for Expression {
         let var = var.into_iden();
         match &*self.inner {
             ExpressionInner::Access(access_chain) => access_chain.try_iterate(tp, var),
-            ExpressionInner::FunctionCall(f) => json_to_iterable(
-                tp,
-                var,
-                f.to_sql(tp)?,
-                None,
-                f.returntype(tp).col_type().unwrap().clone(),
-            ),
+            ExpressionInner::FunctionCall(f) => f.try_iterate(tp, var),
             // ExpressionInner::Index(_, _) => todo!("iiindex"),
             ExpressionInner::Variable(variable) => variable.try_iterate(tp, var),
 
@@ -408,7 +402,7 @@ impl Expression {
                 expr.get_json_field(index.to_sql(tp)?.expr)
                     .with_type(Cell::Value(JsonType::Any.into()))
             }
-            ty => return Err(Error::CanNotIndexType(ty)),
+            ty => return Err(Error::CanNotIndexType(Box::new(ty))),
         })
     }
 
@@ -423,6 +417,13 @@ impl Expression {
     pub fn as_single_ident(&self) -> Result<&Ident> {
         match &*self.inner {
             ExpressionInner::Access(a) => a.as_single_ident(),
+            _ => Err(Error::NotAnIdent("Expression".to_string())),
+        }
+    }
+
+    pub fn as_field_on(&self, alias: impl IntoIden) -> Result<&Ident> {
+        match &*self.inner {
+            ExpressionInner::Access(a) => a.as_field_on(alias),
             _ => Err(Error::NotAnIdent("Expression".to_string())),
         }
     }

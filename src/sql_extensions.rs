@@ -52,6 +52,9 @@ impl SqlExtension for TypedExpression {
     fn extract(self, what: impl ToString) -> SimpleExpr {
         self.expr.extract(what)
     }
+    fn as_select(&self) -> Result<&SelectStatement, Error> {
+        self.expr.as_select()
+    }
 }
 
 impl SqlExtension for SimpleExpr {

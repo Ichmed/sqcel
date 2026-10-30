@@ -121,26 +121,35 @@ impl ToSql for Variable {
     fn to_sql(&self, tp: &Transpiler) -> Result<TypedExpression> {
         Ok(match self {
             Self::Object(o) => o.to_sql(tp)?,
-            Self::List(variables) => TypedExpression {
-                ty: Cell::Value(JsonType::List(Rc::new(JsonType::Any)).into()).into(),
-                expr: SimpleExpr::FunctionCall(
-                    Func::cust(Alias::new("jsonb_build_array")).args(
-                        variables
-                            .iter()
-                            .map(|x| Ok(x.clone().to_sql(tp)?.expr))
-                            .collect::<Result<Vec<_>>>()?,
+            Self::List(variables) => {
+                let args = variables
+                    .iter()
+                    .map(|x| x.clone().to_sql(tp))
+                    .collect::<Result<Vec<_>>>()?;
+                let ty = args.first().map(|x| x.ty.clone()).unwrap_or_default();
+                let ty = if args.iter().all(|x| x.ty == ty) && ty.is_json() {
+                    ty
+                } else {
+                    Cell::Value(JsonType::List(Rc::new(JsonType::Any)).into()).into()
+                };
+                TypedExpression {
+                    ty,
+                    expr: SimpleExpr::FunctionCall(
+                        Func::cust(Alias::new("jsonb_build_array"))
+                            .args(args.into_iter().map(|x| x.expr)),
                     ),
-                ),
-            },
+                }
+            }
             Self::Atom(atom) => atom.to_sql(tp)?,
 
             Self::SqlSubQuery(select_statement, cols)
             | Self::SqlSubQueryAtom(select_statement, cols) => (**select_statement)
                 .clone()
                 .into_expr()
-                .with_type(Type::NamedView(
-                    cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect(),
-                )),
+                .with_type(Type::NamedView {
+                    fields: cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect(),
+                    groups: Default::default(),
+                }),
             Self::SqlAny(simple_expr) => TypedExpression {
                 ty: Type::Unknown,
                 expr: *simple_expr.clone(),
@@ -165,9 +174,10 @@ impl ToSql for Variable {
                 }
             }
             Self::Atom(atom) => atom.returntype(tp),
-            Self::SqlSubQuery(_, cols) | Self::SqlSubQueryAtom(_, cols) => {
-                Type::NamedView(cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect())
-            }
+            Self::SqlSubQuery(_, cols) | Self::SqlSubQueryAtom(_, cols) => Type::NamedView {
+                fields: cols.iter().map(|c| (c.0.clone(), c.1.ty.clone())).collect(),
+                groups: Default::default(),
+            },
             Self::SqlAny(_) => Type::Unknown,
         }
     }
@@ -187,7 +197,7 @@ impl ToSql for Variable {
                 kind: IterKind::Table(Table::new(var.to_string()).columns(index_map.clone())),
             },
             Self::SqlAny(_simple_expr) => {
-                return Err(Error::CanNotIterateType(self.returntype(tp)));
+                return Err(Error::CanNotIterateType(Box::new(self.returntype(tp))));
             }
         })
     }

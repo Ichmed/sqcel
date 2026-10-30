@@ -41,8 +41,19 @@ impl JsonType {
         )]
         match (self, other) {
             (_, ColumnType::Json(Self::Any, _)) => true,
-            (Self::Any | Self::Number, x) if x.is_number() => true,
+            (Self::Any, x) => x.is_number(),
+            (Self::Number, x) => x.is_number(),
+            (Self::Boolean, ColumnType::Boolean) => true,
             _ => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn can_convert_to(&self, other: &ColumnType) -> bool {
+        match (self, other) {
+            (Self::Any, _) => true,
+            (Self::String, x) => x.is_string(),
+            _ => self.can_cast_to(other),
         }
     }
 }
@@ -74,7 +85,7 @@ pub enum JsonObject {
     PartialKnownFields {
         /// Known fields, a `None` name indicatees that it is
         /// dynamically constructed
-        fields: Vec<(Option<String>, Self)>,
+        fields: Vec<(Option<String>, JsonType)>,
         /// Number of unknown fields.
         ///
         /// `None` indicates that the number is not known
@@ -87,7 +98,7 @@ pub enum JsonObject {
     FullyKnownFields {
         /// Known fields, a `None` name indicatees that it is
         /// dynamically constructed
-        fields: Vec<(Option<String>, Self)>,
+        fields: Vec<(Option<String>, JsonType)>,
     },
     /// All fields are known and have static names
     Proto {
@@ -97,12 +108,25 @@ pub enum JsonObject {
         /// object and there are no fields in the object that
         /// are neither required nor optional
         proto_name: Option<String>,
-        fields: Vec<(String, Self)>,
+        fields: Vec<(String, JsonType)>,
     },
 }
 
 impl From<JsonObject> for ColumnType {
     fn from(value: JsonObject) -> Self {
         Self::Json(JsonType::Map(value), false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::{JsonType, Type};
+
+    #[test]
+    fn iter_types() {
+        assert_eq!(
+            Type::from(JsonType::List(JsonType::String.into())).iter_type(),
+            Some(JsonType::String.into())
+        );
     }
 }

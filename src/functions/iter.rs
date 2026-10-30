@@ -1,6 +1,6 @@
 use super::{Function, FunctionOrigin};
 use crate::Result;
-use crate::functions::{FunctionArgs, FunctionPattern, Pattern, ReturnType};
+use crate::functions::{ArgPosition, FunctionArgs, FunctionPattern, Pattern, ReturnType};
 use crate::intermediate::{Expression, ToSql};
 use crate::sql_extensions::{IntoSqlExpression, SqlExtension};
 use crate::types::{ColumnType, TypedExpression};
@@ -35,7 +35,6 @@ impl IntoTableRef for Iterable {
 }
 
 impl Transpiler {
-    #[must_use]
     #[allow(clippy::missing_panics_doc, reason = "Will not panic")]
     pub fn iterate(&self, iter: &Iterable) -> Self {
         let mut b = self.to_builder();
@@ -47,16 +46,31 @@ impl Transpiler {
         .build()
         .unwrap()
     }
+
+    #[must_use]
+    #[allow(clippy::missing_panics_doc, reason = "Will not panic")]
+    pub fn enter(&self, iter: &Iterable) -> Option<Self> {
+        let mut b = self.to_builder();
+        Some(
+            match &iter.kind {
+                IterKind::Column(_) => return None,
+                IterKind::Table(table) => b.enter_anonymous_table(table.clone().layout),
+                IterKind::Schema(schema) => b.enter_anonymous_schema(schema.clone().0),
+            }
+            .build()
+            .unwrap(),
+        )
+    }
 }
 
 pub fn map() -> Function {
     Function::define_with_origin(
         FunctionPattern {
             name: "map".into(),
-            receiver: Some(ColumnType::Inferred.into()),
+            receiver: Some(Pattern::Iter(ColumnType::Inferred.into())),
             args: vec![Pattern::Ident, Pattern::Lambda],
             variadic: None,
-            returns: ReturnType::SameAsArg(1),
+            returns: ReturnType::ArgList(ArgPosition::Arg(1)),
         },
         indoc!(
             r"
@@ -83,10 +97,10 @@ pub fn filter() -> Function {
     Function::define_with_origin(
         FunctionPattern {
             name: "filter".into(),
-            receiver: Some(ColumnType::Inferred.into()),
+            receiver: Some(Pattern::Iter(ColumnType::Inferred.into())),
             args: vec![Pattern::Ident, Pattern::Lambda],
             variadic: None,
-            returns: ReturnType::SameAsReceiver,
+            returns: ReturnType::Arg(ArgPosition::Receiver),
         },
         indoc!(
             r"
@@ -115,10 +129,10 @@ pub fn filter_map() -> Function {
     Function::define_with_origin(
         FunctionPattern {
             name: "map".into(),
-            receiver: Some(ColumnType::Inferred.into()),
+            receiver: Some(Pattern::Iter(ColumnType::Inferred.into())),
             args: vec![Pattern::Ident, Pattern::Lambda, Pattern::Lambda],
             variadic: None,
-            returns: ReturnType::SameAsArg(2),
+            returns: ReturnType::ArgList(ArgPosition::Arg(2)),
         },
         "Same as the two-arg map but with a conditional p filter before the value is transformed.",
         filter_map_body,
@@ -148,12 +162,15 @@ fn filter_map_impl(
     }
     let source = receiver.try_iterate(tp, var.clone().as_single_ident()?.into_iden())?;
 
-    let tp = tp.iterate(&source);
+    let tp_inner = tp.iterate(&source);
 
     let expr = lambda
-        .map_or_else(|| var.to_sql(&tp), |x| x.to_sql(&tp))?
+        .map_or_else(|| var.to_sql(&tp_inner), |x| x.to_sql(&tp_inner))?
         .expr;
-    let filter = filter.map(|x| x.to_sql(&tp)).transpose()?.map(|x| x.expr);
+    let filter = filter
+        .map(|x| x.to_sql(&tp_inner))
+        .transpose()?
+        .map(|x| x.expr);
 
     Ok(Query::select()
         .expr(expr)
@@ -161,7 +178,7 @@ fn filter_map_impl(
         .and_where_option(filter)
         .take()
         .into_expr()
-        .with_type(lambda.unwrap_or(var).returntype(&tp)))
+        .with_type(lambda.unwrap_or(var).returntype(&tp_inner).into_column()?))
 }
 
 fn is_identity_function(
@@ -174,7 +191,6 @@ fn is_identity_function(
     is_none && is_identity
 }
 
-#[must_use]
 pub fn exists() -> Function {
     Function::define_with_origin(
         FunctionPattern {
@@ -196,7 +212,6 @@ pub fn exists() -> Function {
     )
 }
 
-#[must_use]
 pub fn all() -> Function {
     Function::define_with_origin(
         FunctionPattern {
@@ -248,13 +263,12 @@ fn to_sql(tp: &Transpiler, args: &FunctionArgs, oper: SubQueryOper) -> Result<Ty
     Ok(compare.eq(stream).with_type(ColumnType::Boolean))
 }
 
-#[must_use]
 pub fn join() -> Function {
     Function::define_with_origin(
         FunctionPattern {
             name: "join".into(),
-            receiver: Some(ColumnType::Array(ColumnType::Text.into()).into()),
-            args: vec![ColumnType::Text.into()],
+            receiver: Some(Pattern::IterCast(ColumnType::Text.into())),
+            args: vec![Pattern::ExpressionCast(ColumnType::Text.into())],
             variadic: None,
             returns: ColumnType::Text.into(),
         },
@@ -469,7 +483,7 @@ mod test {
     fn join_json() {
         assert_eq!(
             postgres(r#"["foo", "bar"].join(",")"#).unwrap(),
-            r#"(SELECT string_agg("c_1", ',') FROM jsonb_array_elements(jsonb_build_array('foo', 'bar')) AS "t_2"("c_1"))"#
+            r#"(SELECT string_agg("c_1" #>> '{}', ',') FROM jsonb_array_elements(jsonb_build_array('foo', 'bar')) AS "t_2"("c_1"))"#
         );
     }
 }

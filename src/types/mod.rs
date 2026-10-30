@@ -41,6 +41,7 @@ impl From<Error> for ConversionError {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub enum Type {
     /// `foo` or `SELECT "something" as "foo" FROM bar`
     Column(Option<String>, ColumnType),
@@ -49,7 +50,10 @@ pub enum Type {
     NamedRow(Vec<(String, ColumnType)>),
 
     View(Option<Vec<(Option<String>, ColumnType)>>),
-    NamedView(IndexMap<String, ColumnType>),
+    NamedView {
+        fields: IndexMap<String, ColumnType>,
+        groups: IndexMap<String, ColumnType>,
+    },
 
     /// A (maybe named) 1x1 value
     Cell(Cell),
@@ -59,12 +63,13 @@ pub enum Type {
 
 impl From<IndexMap<String, Column>> for Type {
     fn from(value: IndexMap<String, Column>) -> Self {
-        Self::NamedView(
-            value
+        Self::NamedView {
+            fields: value
                 .into_iter()
                 .map(|(_, Column { name, ty })| (name, ty))
                 .collect(),
-        )
+            groups: Default::default(),
+        }
     }
 }
 
@@ -109,11 +114,18 @@ impl Type {
 
     #[must_use]
     pub fn iter_type(&self) -> Option<ColumnType> {
-        match self.col_type()? {
-            ColumnType::Array(x) => Some((**x).clone()),
-            ColumnType::Json(JsonType::List(x), _) => Some((**x).clone().into()),
-            ColumnType::Json(JsonType::Map(_), _) => Some(JsonType::String.into()),
-            _ => None,
+        if *self == Self::Unknown {
+            return Some(ColumnType::Inferred);
+        }
+        match self {
+            Self::Column(_, t) => Some(t.clone()),
+            _ => match self.col_type()? {
+                ColumnType::Array(x) => Some((**x).clone()),
+                ColumnType::Json(JsonType::List(x), _) => Some((**x).clone().into()),
+                ColumnType::Json(JsonType::Map(_), _) => Some(JsonType::String.into()),
+                ColumnType::Inferred => Some(ColumnType::Inferred),
+                _ => None,
+            },
         }
     }
 
@@ -137,16 +149,57 @@ impl Type {
 
     pub fn into_column(self) -> Result<Self> {
         match self {
-            Self::Column(_, _) | Self::Unknown => Ok(self),
             Self::Cell(Cell::Literal(t) | Cell::Value(t)) => Ok(Self::Column(None, t)),
-            _ => Err(Error::MoreThanOneColumn),
+            _ => Ok(self),
+            // _ => Err(Error::MoreThanOneColumn),
+        }
+    }
+
+    #[must_use]
+    pub fn is_subtype(&self, other: &Self) -> bool {
+        #[allow(clippy::match_same_arms)]
+        match (self, other) {
+            (Self::Row(None), Self::Row(_) | Self::NamedRow(_)) => true,
+            (Self::Row(_) | Self::NamedRow(_), Self::Row(None)) => true,
+            (Self::View(None), Self::View(_) | Self::NamedView { .. }) => true,
+            (Self::View(_) | Self::NamedView { .. }, Self::View(None)) => true,
+            (a, b) => a.col_type() == b.col_type(),
+        }
+    }
+
+    pub(crate) fn can_convert_to(&self, other: &Self) -> bool {
+        if *self == Self::Unknown {
+            return true;
+        }
+        match (self.col_type(), other.col_type()) {
+            (Some(ty1), Some(ty2)) => ty1.can_convert_to(ty2),
+            _ => self.can_cast_to(other),
+        }
+    }
+
+    #[must_use]
+    pub fn can_cast_to(&self, other: &Self) -> bool {
+        if *self == Self::Unknown {
+            return true;
+        }
+        match (self.col_type(), other.col_type()) {
+            (Some(ty1), Some(ty2)) => ty1.can_cast_to(ty2),
+            _ => false,
+        }
+    }
+
+    #[must_use]
+    pub fn rename(self, name: String) -> Self {
+        match self {
+            Self::Column(_, t) => Self::Column(Some(name), t),
+            x => x,
         }
     }
 }
 
 impl From<SqlType> for Type {
     fn from(value: SqlType) -> Self {
-        Self::Column(None, value)
+        Self::Cell(Cell::Value(value))
     }
 }
 
@@ -264,5 +317,14 @@ mod test {
             &Cell::Literal(ColumnType::Boolean).into(),
         )
         .unwrap_err();
+    }
+
+    #[test]
+    fn assert_conversions() {
+        assert!(ColumnType::Inferred.can_convert_to(&ColumnType::Text));
+        assert!(
+            Type::Column(None, ColumnType::Inferred)
+                .can_convert_to(&Type::Column(None, ColumnType::Inferred))
+        );
     }
 }

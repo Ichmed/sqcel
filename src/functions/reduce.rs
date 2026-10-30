@@ -3,8 +3,10 @@ use strum::EnumString;
 
 use crate::{
     Transpiler,
-    functions::{Function, FunctionArgs, FunctionOrigin, FunctionPattern, ReturnType},
-    intermediate::{Rc, ToSql},
+    functions::{
+        ArgPosition, Function, FunctionArgs, FunctionOrigin, FunctionPattern, Pattern, ReturnType,
+    },
+    intermediate::ToSql,
     magic::{self},
     sql_extensions::{IntoSqlExpression, SqlExtension},
     transpiler::Result,
@@ -12,7 +14,7 @@ use crate::{
 };
 
 #[non_exhaustive]
-#[derive(Clone, Copy, EnumString, strum::AsRefStr)]
+#[derive(Clone, Copy, EnumString, PartialEq)]
 pub enum Reducer {
     Count,
     Sum,
@@ -21,7 +23,19 @@ pub enum Reducer {
     Min,
 }
 
-#[must_use]
+impl Reducer {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Mean => "mean",
+            Self::Max => "max",
+            Self::Min => "min",
+        }
+    }
+}
+
 pub fn size() -> Function {
     reduce_function(
         "size",
@@ -31,7 +45,6 @@ pub fn size() -> Function {
     )
 }
 
-#[must_use]
 pub fn sum() -> Function {
     reduce_function(
         "sum",
@@ -41,7 +54,6 @@ pub fn sum() -> Function {
     )
 }
 
-#[must_use]
 pub fn mean() -> Function {
     reduce_function(
         "mean",
@@ -51,7 +63,6 @@ pub fn mean() -> Function {
     )
 }
 
-#[must_use]
 pub fn min() -> Function {
     reduce_function(
         "min",
@@ -61,7 +72,6 @@ pub fn min() -> Function {
     )
 }
 
-#[must_use]
 pub fn max() -> Function {
     reduce_function(
         "max",
@@ -80,12 +90,12 @@ fn reduce_function(
     Function::define_with_origin(
         FunctionPattern {
             name: name.into(),
-            receiver: Some(SqlType::Array(Rc::new(SqlType::Inferred)).into()),
+            receiver: Some(Pattern::Iter(SqlType::Inferred.into())),
             args: vec![],
             variadic: None,
             returns: match reducer {
                 Reducer::Count => SqlType::Unsigned.into(),
-                _ => ReturnType::SameAsReceiverInner,
+                _ => ReturnType::ArgInner(ArgPosition::Receiver),
             },
         },
         description,

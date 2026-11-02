@@ -193,6 +193,7 @@ impl ColumnType {
           ->
         TinyUnsigned, SmallUnsigned, Unsigned, BigUnsigned,
         TinyInteger, SmallInteger, Integer, BigInteger,
+        Float, Double,
         Text;
 
         Float, Double

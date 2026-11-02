@@ -198,12 +198,11 @@ impl TypedExpression {
                             .cast_as(ColumnType::Json(JsonType::Any, false))
                             .with_type(JsonType::Null)
                     }
-                    (
-                        ColumnType::Text | ColumnType::Char(_) | ColumnType::String(_),
-                        ColumnType::Json(JsonType::Any | JsonType::String, _),
-                    ) => Func::cust("to_jsonb")
-                        .arg(self.expr.cast_as(ColumnType::Text))
-                        .with_type(JsonType::String),
+                    (x, ColumnType::Json(JsonType::Any | JsonType::String, _)) if x.is_string() => {
+                        Func::cust("to_jsonb")
+                            .arg(self.expr.cast_as(ColumnType::Text))
+                            .with_type(JsonType::String)
+                    }
                     (ColumnType::Json(JsonType::Any | JsonType::String, _), ColumnType::Text) => {
                         match self.expr {
                             SimpleExpr::Binary(
@@ -254,35 +253,30 @@ impl TypedExpression {
 
     /// Will only perform cheap direct casts
     pub fn cast(self, _tp: &Transpiler, other: &ColumnType) -> Result<Self, ConversionError> {
-        let mt = self
+        let column_type = self
             .ty
             .col_type()
             .ok_or_else(|| ConversionError::CantReduce(Box::new(self.ty.clone()), other.clone()))?;
-        if mt == other || (mt.is_json() && other.is_json()) {
+        if column_type == other || (column_type.is_json() && other.is_json()) {
             return Ok(self);
         }
-        if mt.can_cast_to(other) {
-            Ok(Self {
-                ty: match &self.ty {
-                    Type::Column(name, _) => Type::Column(name.clone(), other.clone()),
-                    Type::Cell(_) => Type::Cell(Cell::Value(other.clone())),
-                    _ => {
-                        return Err(ConversionError::CantReduce(
-                            Box::new(self.ty),
-                            other.clone(),
-                        ));
-                    }
-                },
-                expr: self.into_json_cast().expr.cast_as(other.clone()),
-            })
-        } else {
-            Err(ConversionError::CantCast(mt.clone(), other.clone()))
+        if !column_type.can_cast_to(other) {
+            return Err(ConversionError::CantCast(
+                column_type.clone(),
+                other.clone(),
+            ));
         }
+        let ty =
+            self.ty.clone().replace_type(other).ok_or_else(|| {
+                ConversionError::CantReduce(Box::new(self.ty.clone()), other.clone())
+            })?;
+        let expr = self.into_json_cast().expr.cast_as(other.clone());
+        Ok(Self { expr, ty })
     }
 
     // Force the Expression into a single Cell
     pub fn reduce(self, tp: &Transpiler, other: &Cell) -> Result<Self, ConversionError> {
-        Ok(match dbg!((&self.ty, other)) {
+        Ok(match (&self.ty, other) {
             (Type::Cell(_), Cell::Value(ty)) => self.convert(tp, ty)?,
             (
                 Type::Row(_) | Type::NamedRow(_),

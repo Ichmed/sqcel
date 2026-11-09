@@ -2,6 +2,7 @@
 name = "sqcel"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 cel-parser = { version = "0.8.1", default-features = false }
